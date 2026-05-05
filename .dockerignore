@@ -1,0 +1,39 @@
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+.git/
+.gitignore
+.gitattributes
+
+.env
+.env.local
+
+# Большая часть документации не нужна в образе.
+# Исключения (docs/instructions/agent-guide.md, playbooks/audit/*.md, LEGAL.md)
+# нужны как канонические ресурсы для wheel — wheel-сборка идёт в multi-stage builder.
+# Чтобы не усложнять, копируем целиком docs/ и playbooks/ в builder и не игнорируем их здесь.
+
+tests/
+
+.idea/
+.vscode/
+.editorconfig
+.DS_Store
+Thumbs.db
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+.github/

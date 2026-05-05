@@ -1,0 +1,14 @@
+services:
+  checko-mcp:
+    build: .
+    image: checko-mcp:latest
+    # MCP-сервер использует stdio-транспорт.
+    # Сам сервис не слушает сетевой порт — он подключается через stdin/stdout.
+    # Для запуска из агентской IDE используй конфиг из README.
+    stdin_open: true
+    tty: false
+    env_file:
+      - .env
+    environment:
+      CHECKO_API_KEY: ${CHECKO_API_KEY:-}
+    restart: "no"

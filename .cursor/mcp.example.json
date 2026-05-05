@@ -1,0 +1,24 @@
+{
+  "_comment": "Скопируйте в .cursor/mcp.json и подставьте абсолютные пути под вашу машину. CHECKO_API_KEY читается из .env в корне проекта (через python-dotenv). Не коммитьте .cursor/mcp.json — он в .gitignore.",
+
+  "mcpServers": {
+    "checko-local": {
+      "command": "/АБСОЛЮТНЫЙ/ПУТЬ/checko-mcp/.venv/bin/python",
+      "args": ["-m", "checko_mcp"],
+      "cwd": "/АБСОЛЮТНЫЙ/ПУТЬ/checko-mcp"
+    },
+
+    "checko-docker": {
+      "command": "docker",
+      "args": [
+        "compose",
+        "-f",
+        "/АБСОЛЮТНЫЙ/ПУТЬ/checko-mcp/docker-compose.yml",
+        "run",
+        "--rm",
+        "-T",
+        "checko-mcp"
+      ]
+    }
+  }
+}

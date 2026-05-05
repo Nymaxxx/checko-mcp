@@ -1,0 +1,99 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "checko-mcp"
+version = "0.1.0"
+description = "MCP server for Checko.ru API v2 — Russian company due-diligence (EGRUL/EGRIP, finances, legal cases, bankruptcy) / MCP-сервер для Checko.ru API v2"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = [
+    "mcp",
+    "checko",
+    "egrul",
+    "egrip",
+    "russia",
+    "legal",
+    "due-diligence",
+    "ai-tools",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Legal Industry",
+    "Intended Audience :: Financial and Insurance Industry",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Office/Business :: Financial",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Natural Language :: Russian",
+]
+dependencies = [
+    "mcp>=1.0",
+    "httpx>=0.27",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+]
+
+[project.urls]
+Homepage = "https://github.com/Nymaxxx/checko-mcp"
+Repository = "https://github.com/Nymaxxx/checko-mcp"
+"Bug Tracker" = "https://github.com/Nymaxxx/checko-mcp/issues"
+Changelog = "https://github.com/Nymaxxx/checko-mcp/blob/main/CHANGELOG.md"
+
+[project.scripts]
+checko-mcp = "checko_mcp.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/checko_mcp"]
+
+# Внешние markdown-ресурсы (canonical в docs/, playbooks/, корне репозитория)
+# пакуются внутрь wheel в каталог checko_mcp/_resources/.
+# Источник правды — оригинальные файлы; здесь только копия для package data.
+[tool.hatch.build.targets.wheel.force-include]
+"docs/instructions/agent-guide.md" = "checko_mcp/_resources/agent-guide.md"
+"LEGAL.md" = "checko_mcp/_resources/legal.md"
+"playbooks/audit/methodology.md" = "checko_mcp/_resources/audit-methodology.md"
+"playbooks/audit/anomaly-checklist.md" = "checko_mcp/_resources/audit-anomaly-checklist.md"
+"playbooks/audit/audit-template.md" = "checko_mcp/_resources/audit-template.md"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = ["playbooks", "docs"]
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "I",
+    "B",
+    "UP",
+    "W",
+]
+ignore = []
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501"]
+"src/checko_mcp/tools.py" = ["E501"]
+"src/checko_mcp/prompts.py" = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = ["error"]
