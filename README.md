@@ -41,15 +41,38 @@ MCP-сервер для [Checko.ru API v2](https://checko.ru/integration/api) �
 
 ---
 
-## Быстрый старт (Docker Compose)
-
-Самый простой путь — собрать образ один раз и подключить как stdio-сервер.
+## Быстрый старт
 
 ### 1. Получите API-ключ Checko
 
 [checko.ru/user/account/api](https://checko.ru/user/account/api) — потребуется регистрация.
 
-### 2. Соберите образ
+### 2. Подключите к MCP-клиенту
+
+Самый простой способ — через `uvx` (не нужен git clone, Docker или venv). Добавьте запись в конфиг MCP вашего AI-клиента:
+
+```json
+{
+  "mcpServers": {
+    "checko": {
+      "command": "uvx",
+      "args": ["checko-mcp"],
+      "env": { "CHECKO_API_KEY": "ваш_ключ" }
+    }
+  }
+}
+```
+
+Перезапустите MCP-клиент — сервер появится в списке доступных инструментов.
+
+> Нет `uvx`? Установите [`uv`](https://docs.astral.sh/uv/getting-started/installation/) — он включает `uvx`.
+
+---
+
+## Альтернативные способы запуска
+
+<details>
+<summary><b>Через Docker Compose</b></summary>
 
 ```bash
 git clone https://github.com/Nymaxxx/checko-mcp.git
@@ -60,10 +83,6 @@ cp .env.example .env
 
 docker compose build
 ```
-
-### 3. Подключите к MCP-клиенту
-
-Откройте файл конфигурации MCP вашего AI-клиента (любого, поддерживающего stdio-серверы) и добавьте запись. Замените `/абсолютный/путь/checko-mcp` на путь к клонированному репозиторию:
 
 ```json
 {
@@ -80,13 +99,9 @@ docker compose build
 }
 ```
 
-`CHECKO_API_KEY` подхватится из `.env` автоматически (через `env_file` в `docker-compose.yml`).
+`CHECKO_API_KEY` подхватится из `.env` автоматически.
 
-Проверьте — перезапустите MCP-клиент. Сервер должен появиться в списке доступных инструментов.
-
----
-
-## Альтернативные способы запуска
+</details>
 
 <details>
 <summary><b>Через <code>docker run</code> (без compose)</b></summary>
@@ -141,25 +156,6 @@ pip install -e .
 ```
 
 > На Windows путь до интерпретатора выглядит так: `C:\\путь\\checko-mcp\\.venv\\Scripts\\python.exe`.
-
-</details>
-
-<details>
-<summary><b>Через <code>uvx</code> (после публикации на PyPI)</b></summary>
-
-```json
-{
-  "mcpServers": {
-    "checko": {
-      "command": "uvx",
-      "args": ["checko-mcp"],
-      "env": { "CHECKO_API_KEY": "ваш_ключ" }
-    }
-  }
-}
-```
-
-> Доступно после публикации пакета на PyPI.
 
 </details>
 
