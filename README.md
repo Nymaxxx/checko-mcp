@@ -1,6 +1,6 @@
 # Checko MCP Server
 
-[![CI](https://github.com/mazixs/checko-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/mazixs/checko-mcp/actions/workflows/ci.yml)
+[![CI](https://github.com/Nymaxxx/checko-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Nymaxxx/checko-mcp/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-stdio-purple)](https://modelcontextprotocol.io/)
@@ -91,17 +91,17 @@ curl -LsSf https://astral.sh/uv/install.sh | sh     # Linux / macOS
 
 ```bash
 # глобально — во всех проектах
-claude mcp add --env CHECKO_API_KEY=ВАШ_КЛЮЧ --scope user checko -- uvx --from git+https://github.com/mazixs/checko-mcp checko-mcp
+claude mcp add --env CHECKO_API_KEY=ВАШ_КЛЮЧ --scope user checko -- uvx checko-mcp
 
 # только в текущем проекте (запишется в .mcp.json и поедет с репозиторием)
-claude mcp add --env CHECKO_API_KEY=ВАШ_КЛЮЧ --scope project checko -- uvx --from git+https://github.com/mazixs/checko-mcp checko-mcp
+claude mcp add --env CHECKO_API_KEY=ВАШ_КЛЮЧ --scope project checko -- uvx checko-mcp
 ```
 
 **Codex CLI**
 
 ```bash
 # глобально — пишет в ~/.codex/config.toml
-codex mcp add checko --env CHECKO_API_KEY=ВАШ_КЛЮЧ -- uvx --from git+https://github.com/mazixs/checko-mcp checko-mcp
+codex mcp add checko --env CHECKO_API_KEY=ВАШ_КЛЮЧ -- uvx checko-mcp
 ```
 
 Для одного проекта создайте `.codex/config.toml` в его корне:
@@ -109,7 +109,7 @@ codex mcp add checko --env CHECKO_API_KEY=ВАШ_КЛЮЧ -- uvx --from git+http
 ```toml
 [mcp_servers.checko]
 command = "uvx"
-args = ["--from", "git+https://github.com/mazixs/checko-mcp", "checko-mcp"]
+args = ["checko-mcp"]
 
 [mcp_servers.checko.env]
 CHECKO_API_KEY = "ВАШ_КЛЮЧ"
@@ -124,7 +124,7 @@ CLI-команды нет — добавьте запись в файл. Гло�
   "mcpServers": {
     "checko": {
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/mazixs/checko-mcp", "checko-mcp"],
+      "args": ["checko-mcp"],
       "env": { "CHECKO_API_KEY": "ВАШ_КЛЮЧ" }
     }
   }
@@ -135,9 +135,6 @@ CLI-команды нет — добавьте запись в файл. Гло�
 
 Перезапустите клиент и спросите его: «проверь контрагента, ИНН такой-то». В Claude Code список серверов и их состояние показывает `claude mcp list`.
 
-> [!NOTE]
-> Пакет `checko-mcp` на PyPI — это исходный проект `Nymaxxx/checko-mcp`, а не этот форк. Команды выше ставят форк из git, поэтому `uvx checko-mcp` без `--from` использовать не нужно.
-
 ---
 
 ## Альтернативные способы запуска
@@ -146,7 +143,7 @@ CLI-команды нет — добавьте запись в файл. Гло�
 <summary><b>Через Docker Compose</b></summary>
 
 ```bash
-git clone https://github.com/mazixs/checko-mcp.git
+git clone https://github.com/Nymaxxx/checko-mcp.git
 cd checko-mcp
 
 cp .env.example .env
@@ -202,7 +199,7 @@ docker build -t checko-mcp:latest .
 <summary><b>Через локальный Python (pip)</b></summary>
 
 ```bash
-git clone https://github.com/mazixs/checko-mcp.git
+git clone https://github.com/Nymaxxx/checko-mcp.git
 cd checko-mcp
 
 python -m venv .venv
@@ -290,7 +287,7 @@ pip install -e .
 ## Разработка
 
 ```bash
-git clone https://github.com/mazixs/checko-mcp.git
+git clone https://github.com/Nymaxxx/checko-mcp.git
 cd checko-mcp
 
 python -m venv .venv
