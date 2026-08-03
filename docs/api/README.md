@@ -43,8 +43,9 @@
 | [person.md](person.md) | `/person` | Данные по физическому лицу |
 | [finances.md](finances.md) | `/finances` | Финансовая отчётность |
 | [legal-cases.md](legal-cases.md) | `/legal-cases` | Арбитражные дела |
-| [contracts.md](contracts.md) | `/contracts` | Госзакупки (44-ФЗ, 223-ФЗ) |
+| [contracts.md](contracts.md) | `/contracts` | Госзакупки (44-ФЗ, 94-ФЗ, 223-ФЗ) |
 | [inspections.md](inspections.md) | `/inspections` | Проверки |
+| [enforcements.md](enforcements.md) | `/enforcements` | Исполнительные производства ФССП |
 | [bank.md](bank.md) | `/bank` | Банки по БИК |
 | [timeline.md](timeline.md) | `/timeline` | История изменений (v2.4) |
 | [fedresurs.md](fedresurs.md) | `/fedresurs` | Сообщения Федресурса (v2.4) |

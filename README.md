@@ -1,7 +1,7 @@
 # Checko MCP Server
 
-[![CI](https://github.com/Nymaxxx/checko-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Nymaxxx/checko-mcp/actions/workflows/ci.yml)
-[![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
+[![CI](https://github.com/mazixs/checko-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/mazixs/checko-mcp/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-stdio-purple)](https://modelcontextprotocol.io/)
 
@@ -18,7 +18,7 @@ MCP-сервер для [Checko.ru API v2](https://checko.ru/integration/api) �
 
 Сервер выставляет три типа возможностей MCP:
 
-- **12 инструментов** (tools) — прямой доступ к эндпоинтам Checko API.
+- **13 инструментов** (tools) — по одному на каждый метод Checko API.
 - **6 готовых сценариев** (prompts) — типовые workflow с уже зашитой последовательностью вызовов: `check_counterparty`, `verify_bank_details`, `assess_bankruptcy_risk`, `audit_person`, `evaluate_tender_participant`, `analyze_finances`.
 - **5 справочных ресурсов** (resources) — agent guide, правовая справка (152-ФЗ), методология аудита физлица.
 
@@ -26,46 +26,93 @@ MCP-сервер для [Checko.ru API v2](https://checko.ru/integration/api) �
 
 | Инструмент | Описание |
 |---|---|
-| `search` | Поиск компаний и ИП по названию, ИНН, ОГРН, ОКВЭД и другим критериям |
-| `get_company` | Данные ЕГРЮЛ по организации (ОГРН или ИНН) |
-| `get_entrepreneur` | Данные ЕГРИП по индивидуальному предпринимателю |
-| `get_person` | Информация о физическом лице по ИНН |
-| `get_finances` | Финансовая отчётность организации (Росстат, ГИР БО ФНС) |
-| `get_legal_cases` | Арбитражные дела с фильтрацией по роли, датам и сумме иска |
-| `get_contracts` | Государственные контракты по 44-ФЗ и 223-ФЗ |
+| `search` | Поиск по наименованию, ФИО **учредителя** или **руководителя**, коду ОКВЭД-2, дате регистрации или обновления |
+| `get_company` | Данные ЕГРЮЛ по организации (ОГРН, ИНН или ОКПО) |
+| `get_entrepreneur` | Данные ЕГРИП по ИП (ОГРНИП, ИНН или ОКПО) |
+| `get_person` | Связи и факторы риска физического лица по ИНН |
+| `get_finances` | Финансовая отчётность организации (Росстат, ГИР БО ФНС, с 2011 года) |
+| `get_legal_cases` | Арбитражные дела с фильтрами по роли, датам и сумме иска |
+| `get_contracts` | Госзакупки по 44-ФЗ, 94-ФЗ и 223-ФЗ, сортировка по сумме |
 | `get_inspections` | Проверки организации или ИП |
+| `get_enforcements` | **Исполнительные производства ФССП** — открытые взыскания долгов |
 | `get_bank` | Информация о банке по БИК |
 | `get_timeline` | История изменений организации, ИП или физлица |
 | `get_fedresurs` | Сообщения Федресурса (ЕФРСФДЮЛ) |
 | `get_bankruptcy_messages` | Записи ЕФРСБ (реестр банкротств) |
 
+> [!IMPORTANT]
+> **Только российские реестры.** У портала Checko есть данные по организациям Беларуси (ЕГР Минюста РБ, идентификатор УНП), но в API 2.4 нет ни одного метода для них — все методы работают по ОГРН, ИНН, ОКПО и БИК. Проверить белорусскую компанию через этот сервер нельзя.
+
 ---
 
-## Быстрый старт
+## Установка
 
-### 1. Получите API-ключ Checko
+### Шаг 1. Получите API-ключ
 
-[checko.ru/user/account/api](https://checko.ru/user/account/api) — потребуется регистрация.
+[checko.ru/user/account/api](https://checko.ru/user/account/api) — нужна регистрация. Бесплатный тариф: 100 запросов в сутки.
 
-### 2. Подключите к MCP-клиенту
+### Шаг 2. Установите `uv`
 
-Самый простой способ — через `uvx` (не нужен git clone, Docker или venv). Добавьте запись в конфиг MCP вашего AI-клиента:
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh     # Linux / macOS
+```
+
+`uv` приносит с собой `uvx`, который скачает и запустит сервер сам — ни `git clone`, ни venv, ни Docker не нужны.
+
+### Шаг 3. Подключите к своему клиенту
+
+Подставьте свой ключ вместо `ВАШ_КЛЮЧ` и выполните **одну** строку.
+
+**Claude Code**
+
+```bash
+# глобально — во всех проектах
+claude mcp add --env CHECKO_API_KEY=ВАШ_КЛЮЧ --scope user checko -- uvx --from git+https://github.com/mazixs/checko-mcp checko-mcp
+
+# только в текущем проекте (запишется в .mcp.json и поедет с репозиторием)
+claude mcp add --env CHECKO_API_KEY=ВАШ_КЛЮЧ --scope project checko -- uvx --from git+https://github.com/mazixs/checko-mcp checko-mcp
+```
+
+**Codex CLI**
+
+```bash
+# глобально — пишет в ~/.codex/config.toml
+codex mcp add checko --env CHECKO_API_KEY=ВАШ_КЛЮЧ -- uvx --from git+https://github.com/mazixs/checko-mcp checko-mcp
+```
+
+Для одного проекта создайте `.codex/config.toml` в его корне:
+
+```toml
+[mcp_servers.checko]
+command = "uvx"
+args = ["--from", "git+https://github.com/mazixs/checko-mcp", "checko-mcp"]
+
+[mcp_servers.checko.env]
+CHECKO_API_KEY = "ВАШ_КЛЮЧ"
+```
+
+**Antigravity**
+
+CLI-команды нет — добавьте запись в файл. Глобально: `~/.gemini/config/mcp_config.json`. Для одного проекта: `.agents/mcp_config.json` в его корне.
 
 ```json
 {
   "mcpServers": {
     "checko": {
       "command": "uvx",
-      "args": ["checko-mcp"],
-      "env": { "CHECKO_API_KEY": "ваш_ключ" }
+      "args": ["--from", "git+https://github.com/mazixs/checko-mcp", "checko-mcp"],
+      "env": { "CHECKO_API_KEY": "ВАШ_КЛЮЧ" }
     }
   }
 }
 ```
 
-Перезапустите MCP-клиент — сервер появится в списке доступных инструментов.
+### Шаг 4. Проверьте
 
-> Нет `uvx`? Установите [`uv`](https://docs.astral.sh/uv/getting-started/installation/) — он включает `uvx`.
+Перезапустите клиент и спросите его: «проверь контрагента по ИНН 7707049388». В Claude Code список серверов и их состояние показывает `claude mcp list`.
+
+> [!NOTE]
+> Пакет `checko-mcp` на PyPI — это исходный проект `Nymaxxx/checko-mcp`, а не этот форк. Команды выше ставят форк из git, поэтому `uvx checko-mcp` без `--from` использовать не нужно.
 
 ---
 
@@ -75,7 +122,7 @@ MCP-сервер для [Checko.ru API v2](https://checko.ru/integration/api) �
 <summary><b>Через Docker Compose</b></summary>
 
 ```bash
-git clone https://github.com/Nymaxxx/checko-mcp.git
+git clone https://github.com/mazixs/checko-mcp.git
 cd checko-mcp
 
 cp .env.example .env
@@ -131,7 +178,7 @@ docker build -t checko-mcp:latest .
 <summary><b>Через локальный Python (pip)</b></summary>
 
 ```bash
-git clone https://github.com/Nymaxxx/checko-mcp.git
+git clone https://github.com/mazixs/checko-mcp.git
 cd checko-mcp
 
 python -m venv .venv
@@ -217,7 +264,7 @@ pip install -e .
 ## Разработка
 
 ```bash
-git clone https://github.com/Nymaxxx/checko-mcp.git
+git clone https://github.com/mazixs/checko-mcp.git
 cd checko-mcp
 
 python -m venv .venv
@@ -226,9 +273,10 @@ pip install -e ".[dev]"
 
 ruff check src/ tests/
 pytest -q
+pytest -q --cov=checko_mcp --cov-report=term-missing
 ```
 
-CI прогоняет lint + тесты на Python 3.10–3.13 для каждого PR.
+CI на каждый PR: lint и тесты на Python 3.11–3.14, реальный MCP-хендшейк через `scripts/smoke.py --no-api` и сборка Docker-образа.
 
 ---
 

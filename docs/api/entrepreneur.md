@@ -5,7 +5,7 @@
 ## Запрос
 
 ```
-GET https://api.checko.ru/v2/entrepreneur?key=API_KEY&ogrnip={ОГРНИП}
+GET https://api.checko.ru/v2/entrepreneur?key=API_KEY&ogrn={ОГРНИП}
 GET https://api.checko.ru/v2/entrepreneur?key=API_KEY&inn={ИНН}
 ```
 
@@ -14,17 +14,20 @@ GET https://api.checko.ru/v2/entrepreneur?key=API_KEY&inn={ИНН}
 | Параметр | Тип | Обязательный | Описание |
 |----------|-----|:------------:|----------|
 | `key` | string | да | API-ключ |
-| `ogrnip` | string | один из | ОГРНИП (15 цифр) |
+| `ogrn` | string | один из | ОГРНИП предпринимателя, 15 цифр. **Параметр называется `ogrn`, не `ogrnip`** |
 | `inn` | string | один из | ИНН физического лица (12 цифр) |
 | `okpo` | string | нет | Код ОКПО |
 | `source` | string | нет | `true` — вернуть исходные XML-данные ЕГРИП |
 
-> Необходимо указать хотя бы один из: `ogrnip`, `inn`, `okpo`.
+> Необходимо указать хотя бы один из: `ogrn`, `inn`, `okpo`.
+>
+> Если ИНН соответствует нескольким предпринимателям — так бывает, когда человек прекращал
+> и заново начинал деятельность, — вернётся последний зарегистрированный.
 
 ## Примеры
 
 ```
-GET https://api.checko.ru/v2/entrepreneur?key=API_KEY&ogrnip={ОГРНИП}
+GET https://api.checko.ru/v2/entrepreneur?key=API_KEY&ogrn={ОГРНИП}
 GET https://api.checko.ru/v2/entrepreneur?key=API_KEY&inn={ИНН}
 ```
 
