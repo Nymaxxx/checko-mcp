@@ -85,12 +85,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `search`, `get_company`, `get_entrepreneur`, `get_person` — их возможности покрыты
   инструментами `resolve` и `profile` без потери функциональности.
 
-## [0.1.1] — 2026-08-03
-
-### Fixed
-
-- Закреплены верхние границы версий зависимостей.
-
 ## [0.1.0] — 2026-05-05
 
 Первый публичный релиз.
