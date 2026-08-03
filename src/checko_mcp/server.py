@@ -1,112 +1,212 @@
-"""MCP-сервер для Checko.ru API v2."""
+"""MCP-сервер для Checko.ru API v2 (MCP Python SDK 2.x).
+
+В SDK 2.x обработчики передаются в конструктор `Server(...)`, а не навешиваются
+декораторами, и результат нужно собирать явно (`CallToolResult`, `ListToolsResult`
+и т. д.) — автоматической обёртки возвращаемых значений больше нет.
+
+Сервер собирается фабрикой `build_server()`, а не создаётся на уровне модуля:
+это позволяет тестам поднимать изолированный экземпляр с подменённым клиентом.
+"""
 
 import json
+from collections.abc import Awaitable, Callable
 from typing import Any
 
-import mcp.types as types
-from mcp.server import Server
-from mcp.server.lowlevel.helper_types import ReadResourceContents
+import mcp_types as types
+from mcp.server import Server, ServerRequestContext
 from mcp.server.stdio import stdio_server
-from pydantic import AnyUrl
 
+from . import __version__, _shape
 from . import prompts as prompts_mod
 from . import resources as resources_mod
 from ._validation import ValidationError
 from .client import CheckoAPIError, CheckoClient
 from .tools import TOOLS, TOOLS_BY_NAME
 
-app = Server("checko")
+SERVER_NAME = "checko"
 
-_client: CheckoClient | None = None
+ClientFactory = Callable[[], CheckoClient]
 
-
-def _get_client() -> CheckoClient:
-    global _client
-    if _client is None:
-        _client = CheckoClient()
-    return _client
-
-
-def _json(data: Any) -> list[types.TextContent]:
-    return [types.TextContent(type="text", text=json.dumps(data, ensure_ascii=False, indent=2))]
-
-
-def _error(message: str) -> list[types.TextContent]:
-    return [types.TextContent(type="text", text=f"Ошибка: {message}")]
+# Все инструменты Checko только читают внешний источник: состояние не меняется,
+# повторный вызов даёт тот же результат, набор сущностей открытый.
+# Агент использует эти подсказки, чтобы не запрашивать подтверждение на каждый вызов.
+_READ_ONLY = types.ToolAnnotations(
+    read_only_hint=True,
+    destructive_hint=False,
+    idempotent_hint=True,
+    open_world_hint=True,
+)
 
 
-# ---------------------------------------------------------------------------
-# Tools
-# ---------------------------------------------------------------------------
+class _Runtime:
+    """Владелец единственного CheckoClient на время жизни сервера."""
 
-@app.list_tools()
-async def list_tools() -> list[types.Tool]:
-    return [
-        types.Tool(name=t.name, description=t.description, inputSchema=t.schema)
-        for t in TOOLS
-    ]
+    def __init__(self, client_factory: ClientFactory | None = None) -> None:
+        self._factory: ClientFactory = client_factory or CheckoClient
+        self._client: CheckoClient | None = None
 
+    def client(self) -> CheckoClient:
+        if self._client is None:
+            self._client = self._factory()
+        return self._client
 
-@app.call_tool()
-async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextContent]:
-    spec = TOOLS_BY_NAME.get(name)
-    if spec is None:
-        return _error(f"Неизвестный инструмент: {name}")
-
-    try:
-        client = _get_client()
-        if spec.pre is not None:
-            spec.pre(arguments)
-        result = await client.get(spec.endpoint, **arguments)
-    except ValidationError as exc:
-        return _error(str(exc))
-    except CheckoAPIError as exc:
-        return _error(str(exc))
-
-    return _json(result)
+    async def aclose(self) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
 
 
-# ---------------------------------------------------------------------------
-# Resources
-# ---------------------------------------------------------------------------
-
-@app.list_resources()
-async def list_resources() -> list[types.Resource]:
-    return resources_mod.list_resources()
+def _text(payload: str) -> list[types.TextContent]:
+    return [types.TextContent(type="text", text=payload)]
 
 
-@app.read_resource()
-async def read_resource(uri: AnyUrl) -> list[ReadResourceContents]:
-    text = resources_mod.read_resource_text(str(uri))
-    return [ReadResourceContents(content=text, mime_type="text/markdown")]
+def _ok(data: dict[str, Any]) -> types.CallToolResult:
+    """Успешный результат: человекочитаемый JSON + машиночитаемая копия."""
+    return types.CallToolResult(
+        content=_text(json.dumps(data, ensure_ascii=False, indent=2)),
+        structured_content=data,
+        is_error=False,
+    )
 
 
-# ---------------------------------------------------------------------------
-# Prompts
-# ---------------------------------------------------------------------------
+def _fail(message: str) -> types.CallToolResult:
+    """Ошибка выполнения инструмента.
 
-@app.list_prompts()
-async def list_prompts() -> list[types.Prompt]:
-    return prompts_mod.list_prompts()
-
-
-@app.get_prompt()
-async def get_prompt(
-    name: str, arguments: dict[str, str] | None
-) -> types.GetPromptResult:
-    return prompts_mod.get_prompt(name, arguments)
+    `is_error=True` обязателен: иначе агент не отличает сбой от полученных данных
+    и может принять текст ошибки за содержательный ответ.
+    """
+    return types.CallToolResult(content=_text(f"Ошибка: {message}"), is_error=True)
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
+def _build_handlers(runtime: _Runtime) -> dict[str, Callable[..., Awaitable[Any]]]:
+    async def on_list_tools(
+        ctx: ServerRequestContext[None], params: types.PaginatedRequestParams | None
+    ) -> types.ListToolsResult:
+        return types.ListToolsResult(
+            tools=[
+                types.Tool(
+                    name=spec.name,
+                    title=spec.title,
+                    description=spec.description,
+                    input_schema=spec.schema,
+                    annotations=_READ_ONLY,
+                )
+                for spec in TOOLS
+            ]
+        )
+
+    async def on_call_tool(
+        ctx: ServerRequestContext[None], params: types.CallToolRequestParams
+    ) -> types.CallToolResult:
+        spec = TOOLS_BY_NAME.get(params.name)
+        if spec is None:
+            return _fail(f"Неизвестный инструмент: {params.name}")
+
+        arguments: dict[str, Any] = dict(params.arguments or {})
+
+        # detail — параметр сервера, в запрос к API он не уходит.
+        detail = str(arguments.pop("detail", _shape.COMPACT)).strip().lower()
+        if detail not in (_shape.COMPACT, _shape.FULL):
+            return _fail(
+                f"'detail' должен быть '{_shape.COMPACT}' или '{_shape.FULL}' "
+                f"(получено: '{detail}')."
+            )
+
+        # Валидация идёт до создания клиента: иначе при отсутствующем API-ключе
+        # любая ошибка в аргументах маскируется сообщением про ключ.
+        try:
+            if spec.pre is not None:
+                spec.pre(arguments)
+        except ValidationError as exc:
+            return _fail(str(exc))
+
+        if arguments.get("source") and detail != _shape.FULL:
+            return _fail(
+                "source=true возвращает полный исходный набор данных ФНС, и сворачивать "
+                'его бессмысленно. Повторите вызов с detail="full" — либо уберите source, '
+                "если нужны только основные сведения."
+            )
+
+        try:
+            client = runtime.client()
+            if spec.handler is not None:
+                # Каскад сам решает, какие эндпоинты вызвать, и отдаёт готовый результат.
+                result = await spec.handler(client, arguments, detail)
+            else:
+                raw = await client.get(spec.endpoint, **arguments)
+                result = _shape.shape(spec.endpoint, raw, detail)
+        except (ValidationError, CheckoAPIError) as exc:
+            return _fail(str(exc))
+
+        return _ok(result)
+
+    async def on_list_resources(
+        ctx: ServerRequestContext[None], params: types.PaginatedRequestParams | None
+    ) -> types.ListResourcesResult:
+        return types.ListResourcesResult(resources=resources_mod.list_resources())
+
+    async def on_read_resource(
+        ctx: ServerRequestContext[None], params: types.ReadResourceRequestParams
+    ) -> types.ReadResourceResult:
+        uri = str(params.uri)
+        text = resources_mod.read_resource_text(uri)
+        return types.ReadResourceResult(
+            contents=[
+                types.TextResourceContents(uri=uri, text=text, mime_type="text/markdown")
+            ]
+        )
+
+    async def on_list_prompts(
+        ctx: ServerRequestContext[None], params: types.PaginatedRequestParams | None
+    ) -> types.ListPromptsResult:
+        return types.ListPromptsResult(prompts=prompts_mod.list_prompts())
+
+    async def on_get_prompt(
+        ctx: ServerRequestContext[None], params: types.GetPromptRequestParams
+    ) -> types.GetPromptResult:
+        return prompts_mod.get_prompt(params.name, params.arguments)
+
+    return {
+        "on_list_tools": on_list_tools,
+        "on_call_tool": on_call_tool,
+        "on_list_resources": on_list_resources,
+        "on_read_resource": on_read_resource,
+        "on_list_prompts": on_list_prompts,
+        "on_get_prompt": on_get_prompt,
+    }
+
+
+def build_server(
+    client_factory: ClientFactory | None = None,
+) -> tuple[Server[None], _Runtime]:
+    """Собрать сервер и его runtime.
+
+    `client_factory` подменяется в тестах, чтобы не обращаться к сети
+    и не требовать реального API-ключа.
+    """
+    runtime = _Runtime(client_factory)
+    server: Server[None] = Server(
+        SERVER_NAME,
+        # Без явной version SDK отдаёт клиенту пустую строку. Версия в
+        # server_info — единственный способ для клиента понять, какая сборка
+        # запущена: 0.1.0 падала при импорте, и отличать её от рабочей нужно.
+        version=__version__,
+        title="Checko — проверка контрагентов",
+        instructions=(
+            "Инструменты дают доступ к российским государственным реестрам через API "
+            "Checko.ru. Перед проверкой физлица ознакомьтесь с ресурсом "
+            "checko://docs/legal. Данные о белорусских организациях через это API "
+            "недоступны."
+        ),
+        **_build_handlers(runtime),
+    )
+    return server, runtime
+
 
 async def run() -> None:
-    global _client
+    server, runtime = build_server()
     try:
         async with stdio_server() as (read_stream, write_stream):
-            await app.run(read_stream, write_stream, app.create_initialization_options())
+            await server.run(read_stream, write_stream, server.create_initialization_options())
     finally:
-        if _client is not None:
-            await _client.aclose()
-            _client = None
+        await runtime.aclose()

@@ -18,7 +18,7 @@
 
 ## Этап 1. Базовый профиль
 
-> `get_person(inn="...")`
+> `profile(identifier="...", kind="person")`
 
 ### Сводка
 
@@ -258,8 +258,8 @@
 
 | Инструмент | Параметры | Дата запроса |
 |-----------|-----------|-------------|
-| `get_person` | `inn=` | |
-| `get_company` | `ogrn=` | |
+| `profile` (физлицо) | `identifier=`, `kind="person"` | |
+| `profile` (организация) | `identifier=` | |
 | `get_finances` | `ogrn=` | |
 | `get_legal_cases` | `inn=, role=defendant` | |
 | `get_fedresurs` | `inn=` | |

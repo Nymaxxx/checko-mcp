@@ -1,7 +1,7 @@
 # Checko MCP Server
 
 [![CI](https://github.com/Nymaxxx/checko-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Nymaxxx/checko-mcp/actions/workflows/ci.yml)
-[![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-stdio-purple)](https://modelcontextprotocol.io/)
 
@@ -18,38 +18,106 @@ MCP-сервер для [Checko.ru API v2](https://checko.ru/integration/api) �
 
 Сервер выставляет три типа возможностей MCP:
 
-- **12 инструментов** (tools) — прямой доступ к эндпоинтам Checko API.
-- **6 готовых сценариев** (prompts) — типовые workflow с уже зашитой последовательностью вызовов: `check_counterparty`, `verify_bank_details`, `assess_bankruptcy_risk`, `audit_person`, `evaluate_tender_participant`, `analyze_finances`.
+- **13 инструментов** (tools) — каскадная модель: вход, готовые отчёты, отдельные реестры.
+- **6 готовых сценариев** (prompts) — типовые workflow: `check_counterparty`, `verify_bank_details`, `assess_bankruptcy_risk`, `audit_person`, `evaluate_tender_participant`, `analyze_finances`.
 - **5 справочных ресурсов** (resources) — agent guide, правовая справка (152-ФЗ), методология аудита физлица.
 
-### Инструменты
+### Каскадная модель инструментов
+
+Инструменты не повторяют структуру API один-к-одному. Они выстроены в три уровня, и AI-ассистенту почти всегда достаточно первых двух.
+
+**Уровень 1. Вход — определить, о ком речь**
+
+| Инструмент | Что делает |
+|---|---|
+| `resolve` | Принимает наименование, ФИО или любой идентификатор и возвращает **короткий список кандидатов**. Поиск по ФИО **учредителя** и **руководителя** — способ найти все компании человека, не зная его ИНН |
+| `profile` | Полная карточка по идентификатору. **Вид субъекта определяется автоматически** по числу цифр: 8 — ОКПО, 9 — БИК, 10 — ИНН юрлица, 12 — ИНН физлица, 13 — ОГРН, 15 — ОГРНИП |
+
+**Уровень 2. Отчёты — один вызов вместо шести**
+
+| Инструмент | Источники | Расход |
+|---|---|---|
+| `due_diligence_report` | ЕГРЮЛ/ЕГРИП, финансы, активные иски-ответчик, ФССП, Федресурс, ЕФРСБ | 5–6 запросов |
+| `bankruptcy_risk` | ЕФРСБ, намерения кредиторов, ФССП, капитал по строке 1300 | 4–5 запросов |
+
+Отчёты сами определяют вид субъекта, опрашивают реестры параллельно и возвращают сводку с **посчитанными сигналами риска** — с указанием уровня (🔴/🟠/🟡) и источника каждого. Вердикт о сделке они намеренно **не выносят**: правила проверяемы, суждение — нет.
+
+**Уровень 3. Отдельные реестры — когда нужны детали**
 
 | Инструмент | Описание |
 |---|---|
-| `search` | Поиск компаний и ИП по названию, ИНН, ОГРН, ОКВЭД и другим критериям |
-| `get_company` | Данные ЕГРЮЛ по организации (ОГРН или ИНН) |
-| `get_entrepreneur` | Данные ЕГРИП по индивидуальному предпринимателю |
-| `get_person` | Информация о физическом лице по ИНН |
-| `get_finances` | Финансовая отчётность организации (Росстат, ГИР БО ФНС) |
-| `get_legal_cases` | Арбитражные дела с фильтрацией по роли, датам и сумме иска |
-| `get_contracts` | Государственные контракты по 44-ФЗ и 223-ФЗ |
+| `get_finances` | Финансовая отчётность (Росстат, ГИР БО ФНС, с 2011 года) |
+| `get_legal_cases` | Арбитражные дела с фильтрами по роли, датам и сумме иска |
+| `get_contracts` | Госзакупки по 44-ФЗ, 94-ФЗ и 223-ФЗ, сортировка по сумме |
 | `get_inspections` | Проверки организации или ИП |
+| `get_enforcements` | **Исполнительные производства ФССП** — открытые взыскания долгов |
 | `get_bank` | Информация о банке по БИК |
 | `get_timeline` | История изменений организации, ИП или физлица |
 | `get_fedresurs` | Сообщения Федресурса (ЕФРСФДЮЛ) |
 | `get_bankruptcy_messages` | Записи ЕФРСБ (реестр банкротств) |
 
+### Сжатие ответов
+
+У каждого инструмента есть параметр `detail`. По умолчанию `compact`: длинные списки урезаются, сводные показатели и все факторы риска сохраняются, а рядом указывается, сколько элементов было всего.
+
+Это не оптимизация, а условие работоспособности. Замеры на реальном API: полная карточка крупной организации — 113 тыс. символов, расширенная финансовая отчётность — 152 тыс., выдача поиска — 108 тыс. MCP-клиенты обрезают вывод инструмента (Claude Code — на 25 тыс. токенов) **молча**, и ассистент получает оборванный JSON, не заметив этого. В режиме `compact` те же ответы укладываются в 4–7 тыс. токенов.
+
+Полный ответ доступен явно: `detail="full"`.
+
+> [!IMPORTANT]
+> **Только российские реестры.** У портала Checko есть данные по организациям Беларуси (ЕГР Минюста РБ, идентификатор УНП), но в API 2.4 нет ни одного метода для них — все методы работают по ОГРН, ИНН, ОКПО и БИК. Проверить белорусскую компанию через этот сервер нельзя: на УНП API отвечает пустым результатом, а не ошибкой.
+
 ---
 
-## Быстрый старт
+## Установка
 
-### 1. Получите API-ключ Checko
+### Шаг 1. Получите API-ключ
 
-[checko.ru/user/account/api](https://checko.ru/user/account/api) — потребуется регистрация.
+[checko.ru/user/account/api](https://checko.ru/user/account/api) — нужна регистрация. Бесплатный тариф: 100 запросов в сутки.
 
-### 2. Подключите к MCP-клиенту
+### Шаг 2. Установите `uv`
 
-Самый простой способ — через `uvx` (не нужен git clone, Docker или venv). Добавьте запись в конфиг MCP вашего AI-клиента:
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh     # Linux / macOS
+```
+
+`uv` приносит с собой `uvx`, который скачает и запустит сервер сам — ни `git clone`, ни venv, ни Docker не нужны.
+
+### Шаг 3. Подключите к своему клиенту
+
+Подставьте свой ключ вместо `ВАШ_КЛЮЧ` и выполните **одну** строку.
+
+**Claude Code**
+
+```bash
+# глобально — во всех проектах
+claude mcp add --env CHECKO_API_KEY=ВАШ_КЛЮЧ --scope user checko -- uvx checko-mcp
+
+# только в текущем проекте (запишется в .mcp.json и поедет с репозиторием)
+claude mcp add --env CHECKO_API_KEY=ВАШ_КЛЮЧ --scope project checko -- uvx checko-mcp
+```
+
+**Codex CLI**
+
+```bash
+# глобально — пишет в ~/.codex/config.toml
+codex mcp add checko --env CHECKO_API_KEY=ВАШ_КЛЮЧ -- uvx checko-mcp
+```
+
+Для одного проекта создайте `.codex/config.toml` в его корне:
+
+```toml
+[mcp_servers.checko]
+command = "uvx"
+args = ["checko-mcp"]
+
+[mcp_servers.checko.env]
+CHECKO_API_KEY = "ВАШ_КЛЮЧ"
+```
+
+**Antigravity**
+
+CLI-команды нет — добавьте запись в файл. Глобально: `~/.gemini/config/mcp_config.json`. Для одного проекта: `.agents/mcp_config.json` в его корне.
 
 ```json
 {
@@ -57,15 +125,15 @@ MCP-сервер для [Checko.ru API v2](https://checko.ru/integration/api) �
     "checko": {
       "command": "uvx",
       "args": ["checko-mcp"],
-      "env": { "CHECKO_API_KEY": "ваш_ключ" }
+      "env": { "CHECKO_API_KEY": "ВАШ_КЛЮЧ" }
     }
   }
 }
 ```
 
-Перезапустите MCP-клиент — сервер появится в списке доступных инструментов.
+### Шаг 4. Проверьте
 
-> Нет `uvx`? Установите [`uv`](https://docs.astral.sh/uv/getting-started/installation/) — он включает `uvx`.
+Перезапустите клиент и спросите его: «проверь контрагента, ИНН такой-то». В Claude Code список серверов и их состояние показывает `claude mcp list`.
 
 ---
 
@@ -167,9 +235,9 @@ pip install -e .
 
 | Prompt | Аргументы | Назначение |
 |---|---|---|
-| `check_counterparty` | `query`, `purpose?` | Комплексная проверка контрагента: search → company → finances → legal_cases → fedresurs → bankruptcy |
-| `verify_bank_details` | `inn`, `bic` | Проверка платёжных реквизитов: get_company/get_entrepreneur + get_bank |
-| `assess_bankruptcy_risk` | `inn`, `context?` | Оценка риска банкротства по 4 источникам сигналов |
+| `check_counterparty` | `query`, `purpose?` | Комплексная проверка контрагента через `due_diligence_report` |
+| `verify_bank_details` | `inn`, `bic` | Проверка платёжных реквизитов: `profile` + `get_bank` |
+| `assess_bankruptcy_risk` | `inn`, `context?` | Оценка риска банкротства через `bankruptcy_risk` |
 | `audit_person` | `inn`, `purpose?` | Полный аудит физлица по методологии (требует законного основания) |
 | `evaluate_tender_participant` | `query`, `purpose?` | Оценка участника тендера: контракты, проверки, иски, финансы |
 | `analyze_finances` | `ogrn_or_inn`, `years?` | Динамика выручки, прибыли, капитала за N лет |
@@ -197,6 +265,8 @@ pip install -e .
 | `CHECKO_API_KEY` | да | API-ключ Checko.ru |
 | `CHECKO_BASE_URL` | нет | Базовый URL (по умолчанию `https://api.checko.ru/v2`, полезно для тестов) |
 | `CHECKO_TIMEOUT` | нет | Таймаут запроса в секундах (по умолчанию `30`) |
+| `CHECKO_RETRIES` | нет | Число попыток при HTTP 429 и 5xx (по умолчанию `3`) |
+| `CHECKO_CACHE_TTL` | нет | Время жизни кэша ответов в секундах (по умолчанию `900`, `0` отключает). Кэш нужен, чтобы повторный вопрос по тому же субъекту не оплачивался заново |
 
 ---
 
@@ -226,9 +296,10 @@ pip install -e ".[dev]"
 
 ruff check src/ tests/
 pytest -q
+pytest -q --cov=checko_mcp --cov-report=term-missing
 ```
 
-CI прогоняет lint + тесты на Python 3.10–3.13 для каждого PR.
+CI на каждый PR: lint и тесты на Python 3.11–3.14, реальный MCP-хендшейк через `scripts/smoke.py --no-api` и сборка Docker-образа.
 
 ---
 

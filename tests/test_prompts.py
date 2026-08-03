@@ -60,8 +60,8 @@ class TestCheckCounterparty:
         assert len(result.messages) == 1
         text = result.messages[0].content.text
         assert "Тестовая Компания" in text
-        assert "search" in text
-        assert "get_company" in text
+        assert "due_diligence_report" in text
+        assert "сигналы" in text
         assert "Цель:" not in text
 
     def test_with_purpose(self):
@@ -83,7 +83,7 @@ class TestVerifyBankDetails:
             "verify_bank_details", {"inn": SYNTH_INN_LEGAL, "bic": SYNTH_BIC}
         )
         text = result.messages[0].content.text
-        assert "get_company" in text
+        assert 'kind="org"' in text
         assert "get_bank" in text
         assert SYNTH_BIC in text
 
@@ -92,7 +92,7 @@ class TestVerifyBankDetails:
             "verify_bank_details", {"inn": SYNTH_INN_PERSON, "bic": SYNTH_BIC}
         )
         text = result.messages[0].content.text
-        assert "get_entrepreneur" in text
+        assert 'kind="entrepreneur"' in text
 
     def test_invalid_inn_length(self):
         with pytest.raises(ValidationError):
@@ -111,9 +111,9 @@ class TestAssessBankruptcyRisk:
     def test_juridical(self):
         result = get_prompt("assess_bankruptcy_risk", {"inn": SYNTH_INN_LEGAL})
         text = result.messages[0].content.text
-        assert "get_company" in text
-        assert "get_fedresurs" in text
-        assert "get_bankruptcy_messages" in text
+        assert "bankruptcy_risk" in text
+        assert "CreditorIntentionGoToCourt" in text
+        assert "ЕФРСБ" in text
 
     def test_individual_with_context(self):
         result = get_prompt(
@@ -121,7 +121,7 @@ class TestAssessBankruptcyRisk:
             {"inn": SYNTH_INN_PERSON, "context": "не платит 4 месяца"},
         )
         text = result.messages[0].content.text
-        assert "get_entrepreneur" in text or "get_person" in text
+        assert "bankruptcy_risk" in text
         assert "Контекст: не платит 4 месяца" in text
 
     def test_invalid_inn_length(self):
@@ -133,7 +133,7 @@ class TestAuditPerson:
     def test_valid_inn(self):
         result = get_prompt("audit_person", {"inn": SYNTH_INN_PERSON})
         text = result.messages[0].content.text
-        assert "get_person" in text
+        assert 'kind="person"' in text
         assert "152-ФЗ" in text
         assert "checko://playbooks/audit/methodology" in text
 

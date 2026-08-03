@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from importlib.resources import as_file, files
 from pathlib import Path
 
-import mcp.types as types
+import mcp_types as types
 
 _PACKAGE_DATA = "checko_mcp._resources"
 
@@ -85,7 +85,7 @@ def list_resources() -> list[types.Resource]:
             name=spec.name,
             title=spec.title,
             description=spec.description,
-            mimeType="text/markdown",
+            mime_type="text/markdown",
         )
         for spec in RESOURCES
     ]

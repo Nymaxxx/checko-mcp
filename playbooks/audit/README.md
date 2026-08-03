@@ -22,9 +22,9 @@
 
 ## Необходимые инструменты Checko MCP
 
-- `get_person` — отправная точка
-- `get_company` — по каждой связанной организации
-- `get_entrepreneur` — по каждому ИП
+- `profile(identifier=<ИНН>, kind="person")` — отправная точка
+- `profile` — по каждой связанной организации
+- `profile` — по каждому ИП
 - `get_finances` — финансовая отчётность
 - `get_legal_cases` — судебные дела
 - `get_timeline` — хронология изменений

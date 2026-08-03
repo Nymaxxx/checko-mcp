@@ -35,7 +35,7 @@ class TestListResources:
         result = list_resources()
         assert len(result) == len(EXPECTED_URIS)
         for r in result:
-            assert r.mimeType == "text/markdown"
+            assert r.mime_type == "text/markdown"
             assert r.name
             assert r.title
             assert r.description

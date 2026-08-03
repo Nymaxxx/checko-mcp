@@ -4,10 +4,10 @@ build-backend = "hatchling.build"
 
 [project]
 name = "checko-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "MCP server for Checko.ru API v2 — Russian company due-diligence (EGRUL/EGRIP, finances, legal cases, bankruptcy) / MCP-сервер для Checko.ru API v2"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
 keywords = [
@@ -28,26 +28,35 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Internet :: WWW/HTTP",
     "Topic :: Office/Business :: Financial",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Natural Language :: Russian",
 ]
+# Верхние границы обязательны и снимать их нельзя без миграции кода.
+# История: `mcp>=1.0` без границы привёл к установке mcp 2.0.0 (28.07.2026) —
+# мажорной переработки SDK, — и опубликованный пакет падал при импорте
+# (`AttributeError: 'Server' object has no attribute 'list_tools'`).
+#
+# httpx2 — официальный преемник httpx (httpx 0.28.1 от 12.2024 больше не развивается),
+# сопровождается Pydantic. Сам mcp 2.x зависит от httpx2, поэтому использование httpx
+# означало бы два HTTP-стека в одном дереве зависимостей.
 dependencies = [
-    "mcp>=1.0",
-    "httpx>=0.27",
-    "python-dotenv>=1.0",
+    "mcp>=2.0,<3",
+    "httpx2>=2.9,<3",
+    "python-dotenv>=1.0,<2",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.23",
-    "ruff>=0.5",
+    "pytest>=9.0,<10",
+    "pytest-asyncio>=1.4,<2",
+    "pytest-cov>=7.0,<8",
+    "ruff>=0.16,<0.17",
 ]
 
 [project.urls]
@@ -74,7 +83,7 @@ packages = ["src/checko_mcp"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py311"
 extend-exclude = ["playbooks", "docs"]
 
 [tool.ruff.lint]
@@ -96,4 +105,5 @@ ignore = []
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 filterwarnings = ["error"]
