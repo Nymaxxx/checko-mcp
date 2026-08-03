@@ -25,7 +25,7 @@ from dotenv import load_dotenv
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-EXPECTED_TOOLS = 12
+EXPECTED_TOOLS = 13
 EXPECTED_RESOURCES = 5
 EXPECTED_PROMPTS = 6
 
@@ -59,7 +59,7 @@ async def run_smoke(
     async with stdio_client(server_params) as (read, write):
         async with ClientSession(read, write) as session:
             init = await session.initialize()
-            results.append(_ok("initialize", f"server: {init.serverInfo.name}"))
+            results.append(_ok("initialize", f"server: {init.server_info.name}"))
 
             # Tools
             tools = await session.list_tools()
@@ -156,11 +156,11 @@ async def run_smoke(
             # Real API call (только если задан SMOKE_TEST_BIC)
             if real_bic:
                 real = await session.call_tool("get_bank", {"bic": real_bic})
-                if real.isError:
+                if real.is_error:
                     results.append(
                         _fail(
                             f"call_tool[get_bank(SMOKE_TEST_BIC=…{real_bic[-4:]})]",
-                            f"isError: {real.content[0].text if real.content else '?'}",
+                            f"is_error: {real.content[0].text if real.content else '?'}",
                         )
                     )
                 else:

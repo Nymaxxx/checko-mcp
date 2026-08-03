@@ -9,7 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-import mcp.types as types
+import mcp_types as types
 
 from ._validation import ValidationError, check_format
 

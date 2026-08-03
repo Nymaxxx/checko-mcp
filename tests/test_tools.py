@@ -16,6 +16,7 @@ EXPECTED_TOOLS = {
     "get_legal_cases",
     "get_contracts",
     "get_inspections",
+    "get_enforcements",
     "get_bank",
     "get_timeline",
     "get_fedresurs",
@@ -43,6 +44,12 @@ class TestRegistry:
         for tool in TOOLS:
             assert tool.endpoint.startswith("/")
             assert len(tool.description) > 20
+            assert tool.title
+
+    def test_descriptions_state_belarus_limitation_where_relevant(self):
+        """Агент не должен считать, что по УНП можно проверить белорусскую компанию."""
+        for name in ("search", "get_company", "get_entrepreneur"):
+            assert "УНП" in TOOLS_BY_NAME[name].description
 
 
 class TestPreValidators:
@@ -136,8 +143,105 @@ class TestPreValidators:
             spec.pre({})
 
 
+class TestSubjectIdentifiers:
+    """ИП и физлица не должны отсекаться валидатором там, где API их принимает."""
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "get_legal_cases",
+            "get_contracts",
+            "get_inspections",
+            "get_enforcements",
+            "get_timeline",
+            "get_fedresurs",
+            "get_bankruptcy_messages",
+        ],
+    )
+    def test_accepts_person_inn_and_ogrnip(self, name: str):
+        spec = TOOLS_BY_NAME[name]
+        extra = {"law": "44"} if name == "get_contracts" else {}
+        spec.pre({"inn": "123456789012", **extra})
+        spec.pre({"ogrn": "123456789012345", **extra})
+
+    @pytest.mark.parametrize("name", ["get_company", "get_finances"])
+    def test_org_only_tools_still_reject_person_inn(self, name: str):
+        """У юрлица ИНН всегда 10 цифр — 12 здесь действительно ошибка."""
+        spec = TOOLS_BY_NAME[name]
+        with pytest.raises(ValidationError, match="10"):
+            spec.pre({"inn": "123456789012"})
+
+    def test_entrepreneur_maps_ogrnip_alias_to_ogrn(self):
+        """У метода /entrepreneur параметр называется ogrn, а не ogrnip."""
+        spec = TOOLS_BY_NAME["get_entrepreneur"]
+        args = {"ogrnip": "123456789012345"}
+        spec.pre(args)
+        assert args == {"ogrn": "123456789012345"}
+
+    def test_entrepreneur_rejects_org_ogrn_length(self):
+        spec = TOOLS_BY_NAME["get_entrepreneur"]
+        with pytest.raises(ValidationError, match="15"):
+            spec.pre({"ogrn": "1234567890123"})
+
+
+class TestBooleanCoercion:
+    def test_string_true_becomes_api_true(self):
+        spec = TOOLS_BY_NAME["get_company"]
+        args = {"inn": "1234567890", "source": "true"}
+        spec.pre(args)
+        assert args["source"] == "true"
+
+    def test_string_false_is_dropped(self):
+        """Строка 'false' в запросе трактуется API как включённый флаг."""
+        spec = TOOLS_BY_NAME["get_company"]
+        args = {"inn": "1234567890", "source": "false"}
+        spec.pre(args)
+        assert args["source"] is None
+
+    def test_garbage_boolean_rejected(self):
+        spec = TOOLS_BY_NAME["get_company"]
+        with pytest.raises(ValidationError, match="булевым"):
+            spec.pre({"inn": "1234567890", "source": "maybe"})
+
+
+class TestContractsLaw:
+    def test_accepts_94(self):
+        spec = TOOLS_BY_NAME["get_contracts"]
+        args = {"inn": "1234567890", "law": "94"}
+        spec.pre(args)
+        assert args["law"] == "94"
+
+    def test_schema_enum_lists_all_three_laws(self):
+        spec = TOOLS_BY_NAME["get_contracts"]
+        assert set(spec.schema["properties"]["law"]["enum"]) == {"44", "94", "223"}
+
+
+class TestSearchCapabilities:
+    def test_supports_founder_and_leader_search(self):
+        spec = TOOLS_BY_NAME["search"]
+        assert {"founder-name", "leader-name", "reg-date", "upd-date"} <= set(
+            spec.schema["properties"]["by"]["enum"]
+        )
+
+    def test_supports_entrepreneur_object(self):
+        spec = TOOLS_BY_NAME["search"]
+        assert "ent" in spec.schema["properties"]["obj"]["enum"]
+
+    def test_has_no_phantom_date_range(self):
+        """У /search нет date_from/date_to — фильтр по дате идёт через by='reg-date'."""
+        properties = TOOLS_BY_NAME["search"].schema["properties"]
+        assert "date_from" not in properties
+        assert "date_to" not in properties
+
+
 class TestToolSpec:
     def test_is_frozen(self):
-        spec = ToolSpec(name="x", endpoint="/x", description="desc" * 10, schema={"type": "object"})
+        spec = ToolSpec(
+            name="x",
+            endpoint="/x",
+            title="X",
+            description="desc" * 10,
+            schema={"type": "object"},
+        )
         with pytest.raises(FrozenInstanceError):
             spec.name = "y"  # type: ignore[misc]
