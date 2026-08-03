@@ -357,7 +357,7 @@ class TestProfile:
     async def test_empty_answer_is_flagged_not_silently_returned(self) -> None:
         """На белорусский УНП API отвечает 200 с пустым data — это надо назвать."""
         async with mcp_session(payload=_router({"/bank": {"data": {}}})) as (session, _wire):
-            result = await session.call_tool("profile", {"identifier": "100034064"})
+            result = await session.call_tool("profile", {"identifier": "123456789"})
 
         notes = result.structured_content["субъект"]["примечания"]
         assert any("УНП" in note for note in notes)
