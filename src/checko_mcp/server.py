@@ -128,11 +128,17 @@ def _build_handlers(runtime: _Runtime) -> dict[str, Callable[..., Awaitable[Any]
             )
 
         try:
-            result = await runtime.client().get(spec.endpoint, **arguments)
+            client = runtime.client()
+            if spec.handler is not None:
+                # Каскад сам решает, какие эндпоинты вызвать, и отдаёт готовый результат.
+                result = await spec.handler(client, arguments, detail)
+            else:
+                raw = await client.get(spec.endpoint, **arguments)
+                result = _shape.shape(spec.endpoint, raw, detail)
         except (ValidationError, CheckoAPIError) as exc:
             return _fail(str(exc))
 
-        return _ok(_shape.shape(spec.endpoint, result, detail))
+        return _ok(result)
 
     async def on_list_resources(
         ctx: ServerRequestContext[None], params: types.PaginatedRequestParams | None

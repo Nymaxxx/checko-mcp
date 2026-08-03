@@ -9,14 +9,15 @@
 **checko-mcp** — Python MCP-сервер для [Checko.ru API v2](https://checko.ru/integration/api).
 Предоставляет AI-ассистентам и MCP-клиентам:
 
-- **12 инструментов** (tools) — вызовы эндпоинтов API.
+- **13 инструментов** (tools) — каскадная модель: вход (`resolve`, `profile`), готовые отчёты
+  (`due_diligence_report`, `bankruptcy_risk`) и девять обёрток над отдельными методами API.
 - **6 готовых сценариев** (prompts) — типовые workflow с зашитой последовательностью вызовов.
 - **5 справочных ресурсов** (resources) — agent guide, правовая справка, методология аудита.
 
 **Стек:**
-- Python 3.10+ (CI: 3.10/3.11/3.12/3.13)
-- `mcp[cli]` — Python MCP SDK (stdio-транспорт)
-- `httpx` — async HTTP-клиент (один экземпляр на жизнь сервера)
+- Python 3.11+ (CI: 3.11/3.12/3.13/3.14)
+- `mcp>=2,<3` — Python MCP SDK 2.x (stdio-транспорт)
+- `httpx2` — async HTTP-клиент (один экземпляр на жизнь сервера)
 - `python-dotenv` — загрузка переменных окружения
 - `pytest` + `pytest-asyncio` — тесты
 - `ruff` — линтер
@@ -33,8 +34,12 @@ checko-mcp/
 │       ├── __init__.py        — версия пакета
 │       ├── __main__.py        — точка входа: asyncio.run(run())
 │       ├── _validation.py     — require_any, check_format, coerce_bool, ValidationError
-│       ├── client.py          — CheckoClient (httpx.AsyncClient + CheckoAPIError)
-│       ├── tools.py           — реестр TOOLS: список ToolSpec(name, endpoint, schema, pre)
+│       ├── _routing.py        — определение вида субъекта по числу цифр идентификатора
+│       ├── _shape.py          — сжатие ответа (detail=compact|full)
+│       ├── _reports.py        — каскады: resolve, profile, отчёты, расчёт сигналов
+│       ├── _cache.py          — TTL-кэш ответов API
+│       ├── client.py          — CheckoClient (httpx2.AsyncClient + повторы + кэш)
+│       ├── tools.py           — реестр TOOLS: ToolSpec(endpoint | handler, schema, pre)
 │       ├── resources.py       — реестр RESOURCES + загрузка markdown (package data + dev fallback)
 │       ├── prompts.py         — реестр PROMPTS: 6 готовых сценариев
 │       ├── server.py          — MCP Server: list_tools/call_tool, list_resources/read_resource,
@@ -194,20 +199,26 @@ api.checko.ru/v2/{endpoint}
 
 Паттерн: `get_<resource>` для получения данных, `search` для поиска.
 
-| Инструмент | Эндпоинт |
+| Инструмент | Метод API |
 |---|---|
-| `search` | `/search` |
-| `get_company` | `/company` |
-| `get_entrepreneur` | `/entrepreneur` |
-| `get_person` | `/person` |
+| `resolve` | `/search`, либо `/company`/`/entrepreneur`/`/person`/`/bank` при вводе цифр |
+| `profile` | `/company`, `/entrepreneur`, `/person` или `/bank` — по числу цифр |
+| `due_diligence_report` | каскад: карточка + `/finances` + `/legal-cases` + `/enforcements` + `/fedresurs` + `/bankruptcy-messages` |
+| `bankruptcy_risk` | каскад: карточка + `/bankruptcy-messages` + `/fedresurs` + `/enforcements` + `/finances` |
 | `get_finances` | `/finances` |
 | `get_legal_cases` | `/legal-cases` |
 | `get_contracts` | `/contracts` |
 | `get_inspections` | `/inspections` |
+| `get_enforcements` | `/enforcements` |
 | `get_bank` | `/bank` |
 | `get_timeline` | `/timeline` |
 | `get_fedresurs` | `/fedresurs` |
 | `get_bankruptcy_messages` | `/bankruptcy-messages` |
+
+Каскадные инструменты (`resolve`, `profile`, оба отчёта) задаются полем `handler`, обёртки —
+полем `endpoint`; `ToolSpec.__post_init__` требует ровно одно из двух. Эндпоинты, которые
+задействуют каскады, перечислены в `HANDLER_ENDPOINTS` — без этого тест покрытия методов API
+решит, что метод остался без инструмента.
 
 ---
 
@@ -218,9 +229,13 @@ api.checko.ru/v2/{endpoint}
 1. **Документация эндпоинта** — добавить `docs/api/<endpoint>.md` с параметрами и форматом ответа.
 2. **Pre-валидатор** — добавить `_xxx_pre(args)` в `tools.py` (или переиспользовать `_id_required_pre`).
 3. **Реестр** — добавить `ToolSpec(...)` в список `TOOLS` в `tools.py`.
-4. **Тесты** — добавить case в `tests/test_tools.py`:
-   - имя в `EXPECTED_TOOLS`;
-   - проверка pre-валидатора (отсутствие обязательных, неверный формат, конвертация bool).
+4. **Тесты** — обязательны три места:
+   - имя в `EXPECTED_TOOLS` в `tests/test_tools.py` и проверка pre-валидатора;
+   - параметры метода в `API_PARAMS` в `tests/test_api_contract.py` — это источник истины,
+     схема не должна объявлять ничего сверх него;
+   - wire-кейс в `WIRE_CASES` — какой именно путь и query-параметры уходят в API. Без него
+     ошибка в имени параметра не ловится ничем (так `/entrepreneur` получал `ogrnip`).
+   - счётчик `EXPECTED_TOOLS` в `scripts/smoke.py`.
 5. **Документация для агента** — обновить `docs/instructions/agent-guide.md` (поля, риски, анти-паттерны для нового инструмента).
 6. **Индексы** — обновить `docs/api/README.md`, `README.md`, `AGENTS.md` (этот файл, таблица выше).
 7. **Changelog** — добавить запись в `## [Unreleased]` секцию `CHANGELOG.md`.
@@ -253,6 +268,8 @@ api.checko.ru/v2/{endpoint}
 | `CHECKO_API_KEY` | да | API-ключ Checko.ru ([получить](https://checko.ru/user/account/api)) |
 | `CHECKO_BASE_URL` | нет | Базовый URL (по умолчанию `https://api.checko.ru/v2`) |
 | `CHECKO_TIMEOUT` | нет | Таймаут запроса в секундах (по умолчанию `30`) |
+| `CHECKO_RETRIES` | нет | Повторы при HTTP 429 и 5xx (по умолчанию `3`) |
+| `CHECKO_CACHE_TTL` | нет | Время жизни кэша ответов, сек. (по умолчанию `900`, `0` отключает) |
 
 ---
 
@@ -294,7 +311,10 @@ python scripts/smoke.py --docker       # против собранного docke
 python scripts/smoke.py --no-api       # только структурные проверки, без обращения к Checko
 ```
 
-Смок-тест должен показать `17/17 checks passed` (или `16/16` без API). Запускать перед каждой публикацией версии.
+Смок-тест должен показать `16/16 checks passed` без реального вызова API (`17/17` с ним).
+Запускать перед каждой публикацией версии. Шаг `--no-api` включён в CI: без него мажорный
+апгрейд MCP SDK проходит проверки незамеченным, потому что unit-тесты реестров не поднимают
+сервер.
 
 ---
 
@@ -302,9 +322,24 @@ python scripts/smoke.py --no-api       # только структурные п�
 
 - **Данные арбитражных дел** обновляются с задержкой ~1–2 недели.
 - **ИНН юрлица** не уникален при наличии филиалов — API возвращает головную организацию.
-- **Физлицо** идентифицируется только по ИНН (12 цифр), поиск по ФИО недоступен.
-- **Булевы параметры** должны передаваться в API как строка `"true"` — этим занимается `coerce_bool`.
-- Версия API **2.4** (02.2026) добавила `/timeline`, `/fedresurs`, `/bankruptcy-messages`.
+- **Физлицо** идентифицируется только по ИНН (12 цифр). Организации человека ищутся через
+  `/search` с `by=founder-name` или `by=leader-name`.
+- **У `/entrepreneur` параметр называется `ogrn`, а не `ogrnip`**, хотя несёт ОГРНИП.
+  На `ogrnip` метод отвечает `HTTP 400`.
+- **Булевы параметры** должны передаваться в API как строка `"true"` — этим занимается
+  `coerce_bool`. Значение `false` нужно убирать из запроса целиком: строку `"false"`
+  API трактует как включённый флаг.
+- **`/search` не имеет `date_from`/`date_to`.** Неизвестные параметры молча игнорируются,
+  поэтому объявлять в схеме то, чего у метода нет, опаснее, чем не объявлять ничего.
+- **Ответы очень объёмные:** расширенная отчётность до 152 тыс. символов, карточка крупной
+  организации до 113 тыс. MCP-клиенты обрезают вывод молча, отсюда `detail=compact`
+  по умолчанию.
+- **Тарифы:** 100 запросов в сутки бесплатно, далее 0,10–0,15 руб. за запрос. На бесплатном
+  тарифе `meta.balance` равен 0 постоянно — признак исчерпания это `meta.today_request_count`,
+  а не нулевой баланс.
+- **Белорусских данных в API нет.** На УНП приходит `200` с пустым `data`, а не ошибка.
+- Версия API **2.4** (02.2026) добавила `/timeline`, `/fedresurs`, `/bankruptcy-messages`,
+  `СвязУчред` в `/company` и `codes=all` в `/search`. Метод `/enforcements` есть с версии 2.0.
 
 ---
 

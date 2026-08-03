@@ -25,6 +25,10 @@ def _api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CHECKO_BASE_URL", "https://api.checko.test/v2")
     monkeypatch.delenv("CHECKO_TIMEOUT", raising=False)
     monkeypatch.delenv("CHECKO_RETRIES", raising=False)
+    # Кэш по умолчанию выключен: иначе повторный запрос в тесте не дойдёт
+    # до транспорта и подсчёт обращений станет непредсказуемым.
+    # Тесты кэша включают его сами.
+    monkeypatch.setenv("CHECKO_CACHE_TTL", "0")
 
 
 @pytest.fixture
@@ -45,17 +49,38 @@ async def make_client() -> AsyncIterator[Callable[..., CheckoClient]]:
 
 
 class Wire:
-    """Перехваченный исходящий HTTP-запрос к Checko API."""
+    """Перехваченные исходящие HTTP-запросы к Checko API.
+
+    Каскадные инструменты делают несколько запросов, поэтому сохраняется вся
+    последовательность, а `path` и `params` указывают на последний запрос.
+    """
 
     def __init__(self) -> None:
-        self.path: str | None = None
-        self.params: dict[str, str] = {}
-        self.calls: int = 0
+        self.requests: list[tuple[str, dict[str, str]]] = []
+
+    def record(self, path: str, params: dict[str, str]) -> None:
+        self.requests.append((path, params))
+
+    @property
+    def calls(self) -> int:
+        return len(self.requests)
+
+    @property
+    def path(self) -> str | None:
+        return self.requests[-1][0] if self.requests else None
+
+    @property
+    def params(self) -> dict[str, str]:
+        return self.requests[-1][1] if self.requests else {}
+
+    @property
+    def paths(self) -> list[str]:
+        return [path for path, _ in self.requests]
 
 
 @asynccontextmanager
 async def mcp_session(
-    payload: dict[str, Any] | None = None,
+    payload: dict[str, Any] | Callable[[httpx.Request], dict[str, Any]] | None = None,
     status: int = 200,
     client_factory: Callable[[], CheckoClient] | None = None,
 ) -> AsyncIterator[tuple[ClientSession, Wire]]:
@@ -69,9 +94,9 @@ async def mcp_session(
     wire = Wire()
 
     def handler(request: httpx.Request) -> httpx.Response:
-        wire.path = request.url.path
-        wire.params = dict(request.url.params)
-        wire.calls += 1
+        wire.record(request.url.path, dict(request.url.params))
+        if callable(payload):
+            return httpx.Response(status, json=payload(request))
         return httpx.Response(status, json=payload if payload is not None else OK_PAYLOAD)
 
     factory = client_factory or (

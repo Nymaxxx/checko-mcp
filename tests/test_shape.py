@@ -146,7 +146,7 @@ class TestQuotaWarning:
 class TestDetailThroughProtocol:
     async def test_compact_is_the_default(self) -> None:
         async with mcp_session(payload=_company()) as (session, _wire):
-            result = await session.call_tool("get_company", {"ogrn": "1234567890123"})
+            result = await session.call_tool("profile", {"identifier": "1234567890123"})
 
         assert result.is_error is False
         assert len(result.structured_content["data"]["Лиценз"]) == NESTED_LIMIT
@@ -154,7 +154,7 @@ class TestDetailThroughProtocol:
     async def test_full_returns_everything(self) -> None:
         async with mcp_session(payload=_company()) as (session, _wire):
             result = await session.call_tool(
-                "get_company", {"ogrn": "1234567890123", "detail": "full"}
+                "profile", {"identifier": "1234567890123", "detail": "full"}
             )
 
         assert len(result.structured_content["data"]["Лиценз"]) == 88
@@ -163,7 +163,7 @@ class TestDetailThroughProtocol:
     async def test_invalid_detail_is_rejected(self) -> None:
         async with mcp_session() as (session, wire):
             result = await session.call_tool(
-                "get_company", {"ogrn": "1234567890123", "detail": "подробно"}
+                "profile", {"identifier": "1234567890123", "detail": "подробно"}
             )
 
         assert result.is_error is True
@@ -173,7 +173,7 @@ class TestDetailThroughProtocol:
         """source=true — это запрос полного дампа ФНС; сворачивать его бессмысленно."""
         async with mcp_session() as (session, wire):
             result = await session.call_tool(
-                "get_company", {"ogrn": "1234567890123", "source": True}
+                "profile", {"identifier": "1234567890123", "source": True}
             )
 
         assert result.is_error is True
@@ -183,8 +183,8 @@ class TestDetailThroughProtocol:
     async def test_source_allowed_with_full(self) -> None:
         async with mcp_session() as (session, wire):
             result = await session.call_tool(
-                "get_company",
-                {"ogrn": "1234567890123", "source": True, "detail": "full"},
+                "profile",
+                {"identifier": "1234567890123", "source": True, "detail": "full"},
             )
 
         assert result.is_error is False

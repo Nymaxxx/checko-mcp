@@ -11,9 +11,19 @@
 
 import pytest
 
-from checko_mcp.tools import CLIENT_ONLY_PARAMS, TOOLS, TOOLS_BY_NAME
+from checko_mcp.tools import (
+    CLIENT_ONLY_PARAMS,
+    HANDLER_ENDPOINTS,
+    TOOLS,
+    TOOLS_BY_NAME,
+)
 
 from .conftest import mcp_session
+
+# Инструменты-обёртки над одним методом API — только для них схема сверяется
+# со списком документированных параметров. Каскады сами собирают запросы.
+ENDPOINT_TOOLS = [spec for spec in TOOLS if spec.endpoint is not None]
+HANDLER_TOOLS = [spec for spec in TOOLS if spec.handler is not None]
 
 # key добавляется клиентом автоматически и в схемах инструментов не участвует.
 API_PARAMS: dict[str, set[str]] = {
@@ -42,16 +52,22 @@ API_PARAMS: dict[str, set[str]] = {
 
 class TestSchemasMatchDocumentedApi:
     def test_every_tool_targets_a_documented_endpoint(self) -> None:
-        assert {spec.endpoint for spec in TOOLS} <= set(API_PARAMS)
+        assert {spec.endpoint for spec in ENDPOINT_TOOLS} <= set(API_PARAMS)
+        assert HANDLER_ENDPOINTS <= set(API_PARAMS)
 
-    def test_all_documented_endpoints_are_exposed(self) -> None:
+    def test_all_documented_endpoints_are_reachable(self) -> None:
         """Ни один метод API не должен остаться без инструмента.
 
         Так был потерян `/enforcements` — исполнительные производства ФССП.
         """
-        assert {spec.endpoint for spec in TOOLS} == set(API_PARAMS)
+        reachable = {spec.endpoint for spec in ENDPOINT_TOOLS} | set(HANDLER_ENDPOINTS)
+        assert reachable == set(API_PARAMS)
 
-    @pytest.mark.parametrize("spec", TOOLS, ids=lambda s: s.name)
+    def test_each_tool_is_either_wrapper_or_cascade(self) -> None:
+        for spec in TOOLS:
+            assert bool(spec.endpoint) != bool(spec.handler), spec.name
+
+    @pytest.mark.parametrize("spec", ENDPOINT_TOOLS, ids=lambda s: s.name)
     def test_schema_declares_no_unknown_parameters(self, spec) -> None:
         declared = set(spec.schema["properties"]) - CLIENT_ONLY_PARAMS
         unknown = declared - API_PARAMS[spec.endpoint]
@@ -68,7 +84,7 @@ class TestSchemasMatchDocumentedApi:
         """`detail` обрабатывается сервером; попадание его в запрос — ошибка."""
         async with mcp_session() as (session, wire):
             result = await session.call_tool(
-                "get_company", {"ogrn": "1234567890123", "detail": "full"}
+                "profile", {"identifier": "1234567890123", "detail": "full"}
             )
 
         assert not result.is_error
@@ -78,39 +94,43 @@ class TestSchemasMatchDocumentedApi:
 # (инструмент, аргументы, ожидаемый путь, ожидаемые query-параметры без key)
 WIRE_CASES: list[tuple[str, dict, str, dict[str, str]]] = [
     (
-        "search",
-        {"by": "founder-name", "obj": "org", "query": "иванов иван иванович", "active": True},
+        "resolve",
+        {"by": "founder-name", "query": "иванов иван иванович", "active": True},
         "/search",
         {"by": "founder-name", "obj": "org", "query": "иванов иван иванович", "active": "true"},
     ),
     (
-        "search",
-        {"by": "okved", "obj": "ent", "query": "62.01", "codes": "all", "opf": "12300"},
+        "resolve",
+        {"by": "okved", "obj": "ent", "query": "62.01", "opf": "12300"},
         "/search",
-        {"by": "okved", "obj": "ent", "query": "62.01", "codes": "all", "opf": "12300"},
+        {"by": "okved", "obj": "ent", "query": "62.01", "opf": "12300"},
     ),
-    ("get_company", {"ogrn": "1234567890123"}, "/company", {"ogrn": "1234567890123"}),
-    ("get_company", {"okpo": "01234567"}, "/company", {"okpo": "01234567"}),
+    # Маршрутизация по числу цифр: агенту не нужно угадывать метод.
+    ("resolve", {"query": "1234567890123"}, "/company", {"ogrn": "1234567890123"}),
+    ("profile", {"identifier": "1234567890123"}, "/company", {"ogrn": "1234567890123"}),
+    ("profile", {"identifier": "1234567890"}, "/company", {"inn": "1234567890"}),
+    ("profile", {"identifier": "01234567"}, "/company", {"okpo": "01234567"}),
     (
-        "get_company",
-        {"inn": "1234567890", "source": False},
+        "profile",
+        {"identifier": "123456789012345"},
+        "/entrepreneur",
+        {"ogrn": "123456789012345"},
+    ),
+    ("profile", {"identifier": "123456789012"}, "/entrepreneur", {"inn": "123456789012"}),
+    ("profile", {"identifier": "123456789"}, "/bank", {"bic": "123456789"}),
+    (
+        # kind принудительно выбирает метод, минуя автоопределение.
+        "profile",
+        {"identifier": "123456789012", "kind": "person"},
+        "/person",
+        {"inn": "123456789012"},
+    ),
+    (
+        "profile",
+        {"identifier": "1234567890123", "source": False},
         "/company",
-        {"inn": "1234567890"},
+        {"ogrn": "1234567890123"},
     ),
-    (
-        "get_entrepreneur",
-        {"ogrn": "123456789012345"},
-        "/entrepreneur",
-        {"ogrn": "123456789012345"},
-    ),
-    (
-        # Псевдоним: у метода параметр называется ogrn, а не ogrnip.
-        "get_entrepreneur",
-        {"ogrnip": "123456789012345"},
-        "/entrepreneur",
-        {"ogrn": "123456789012345"},
-    ),
-    ("get_person", {"inn": "123456789012"}, "/person", {"inn": "123456789012"}),
     (
         "get_finances",
         {"ogrn": "1234567890123", "extended": True},
@@ -195,6 +215,11 @@ async def test_outgoing_request_matches_api(
     assert sent == expected
 
 
-def test_wire_cases_cover_every_tool() -> None:
-    """Каждый инструмент должен иметь хотя бы один проверенный запрос."""
-    assert {case[0] for case in WIRE_CASES} == set(TOOLS_BY_NAME)
+def test_wire_cases_cover_every_single_call_tool() -> None:
+    """У каждого инструмента с одним запросом должен быть проверенный вызов.
+
+    Каскады проверяются отдельно в tests/test_reports.py — там важна
+    последовательность обращений, а не один запрос.
+    """
+    cascades = {"due_diligence_report", "bankruptcy_risk"}
+    assert {case[0] for case in WIRE_CASES} == set(TOOLS_BY_NAME) - cascades

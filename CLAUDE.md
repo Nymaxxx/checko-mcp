@@ -4,8 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Что это
 
-MCP-сервер (stdio) поверх Checko.ru API v2: 12 инструментов, 6 prompts, 5 markdown-ресурсов.
-Python 3.10+, `mcp[cli]` + `httpx`, сборка через hatchling, линт `ruff`, тесты `pytest`.
+MCP-сервер (stdio) поверх Checko.ru API v2: 13 инструментов, 6 prompts, 5 markdown-ресурсов.
+Python 3.11+, `mcp>=2` + `httpx2`, сборка через hatchling, линт `ruff`, тесты `pytest`.
 
 Подробные соглашения по коду, чеклисты добавления инструментов/prompts/ресурсов и особенности
 Checko API - в [`AGENTS.md`](AGENTS.md). Этот файл не дублирует его, а дает быстрый вход.
@@ -21,7 +21,7 @@ pytest -q                      # все тесты
 
 pytest tests/test_tools.py -q                                  # один файл
 pytest tests/test_tools.py::TestPreValidators -q                # один класс
-pytest tests/test_tools.py::TestPreValidators::test_company_requires_id -q
+pytest tests/test_tools.py::TestPreValidators::test_contracts_requires_law -q
 pytest -k coerce -q                                             # по подстроке
 
 python -m checko_mcp           # запуск сервера (ждет MCP-клиента на stdin/stdout)
@@ -40,8 +40,8 @@ python scripts/smoke.py --no-api   # только структурные про�
 
 Docker: `docker compose build`, затем `docker compose run --rm -i checko-mcp`.
 
-CI (`.github/workflows/ci.yml`): `ruff check src/ tests/` + `pytest -q` на Python 3.10-3.13,
-плюс отдельная сборка Docker-образа.
+CI (`.github/workflows/ci.yml`): `ruff check src/ tests/` + `pytest -q` на Python 3.11-3.14,
+реальный MCP-хендшейк через `scripts/smoke.py --no-api`, плюс сборка Docker-образа.
 
 ## Архитектура
 
@@ -57,17 +57,45 @@ MCP-клиент ──stdio──▶ server.py ──▶ tools.py     (TOOLS / 
 `PromptSpec`) + список + индекс по ключу. Добавление возможности = добавление записи в список,
 а не правка `server.py`.
 
-**Путь tool-вызова:** `call_tool` находит `ToolSpec` → `spec.pre(arguments)` валидирует и **мутирует
-аргументы на месте** → `CheckoClient.get(spec.endpoint, **arguments)` → ответ отдается
-pretty-printed JSON. `ValidationError` и `CheckoAPIError` не пробрасываются наружу, а
-превращаются в текст `Ошибка: ...` (`_error()` в `server.py`), поэтому у неуспешного вызова
-инструмента нормальный `TextContent`, а не MCP-ошибка.
+**Инструменты двух видов.** У `ToolSpec` заполнено ровно одно из двух полей, и `__post_init__`
+это проверяет:
 
-**Клиент:** один `httpx.AsyncClient` на весь срок жизни процесса, ленивая инициализация через
-`_get_client()`, закрытие в `finally` внутри `run()`. `key` добавляется автоматически,
-`None`-параметры отфильтровываются. Ошибкой считается не только HTTP-статус, но и
-`meta.status == "error"` в теле 200-ответа. Для тестов в конструктор передается
+- `endpoint` - тонкая обертка над одним методом API. Сервер вызывает `spec.pre(args)`,
+  затем `client.get(endpoint, **args)`, затем `_shape.shape(...)`.
+- `handler` - каскад из `_reports.py`, который сам решает, какие методы вызвать, и возвращает
+  готовый результат. Сервер к нему `shape()` не применяет.
+
+Каскадные: `resolve`, `profile`, `due_diligence_report`, `bankruptcy_risk`. Остальные девять -
+обертки. Соответствие «инструмент - метод API» для каскадов объявлено в `HANDLER_ENDPOINTS`,
+иначе тест покрытия эндпоинтов не увидит, что метод задействован.
+
+**Вспомогательные модули:**
+
+- `_routing.py` - определение вида субъекта по числу цифр (8 ОКПО, 9 БИК, 10 ИНН юрлица,
+  12 ИНН физлица, 13 ОГРН, 15 ОГРНИП). У 12 цифр есть `fallback`: сначала ЕГРИП, потом физлицо.
+- `_shape.py` - сжатие ответа. Универсальное свертывание длинных списков, а не белый список
+  полей: белый список молча терял бы новые поля API, а скалярные поля несут факторы риска.
+- `_reports.py` - каскады и детерминированный расчет сигналов.
+- `_cache.py` - TTL-кэш в `CheckoClient.get()`. Ошибки не кэшируются.
+
+**Путь tool-вызова:** `call_tool` находит `ToolSpec` → снимает клиентский `detail` →
+`spec.pre(arguments)` валидирует и **мутирует аргументы на месте** → дальше либо
+`client.get(endpoint)` + `shape()`, либо `spec.handler(...)`. Валидация идет **до** создания
+клиента: иначе без API-ключа любая ошибка в аргументах маскировалась бы сообщением про ключ,
+а невалидный вызов расходовал бы платную квоту (это проверяется тестом).
+`ValidationError` и `CheckoAPIError` превращаются в `CallToolResult(is_error=True)` -
+агент должен отличать сбой от данных.
+
+**Клиент:** один `httpx2.AsyncClient` на весь срок жизни процесса, создается лениво через
+`_Runtime.client()`, закрывается в `finally` внутри `run()`. `key` добавляется автоматически,
+`None`-параметры отфильтровываются, перед сетью проверяется кэш. Ошибкой считается не только
+HTTP-статус, но и `meta.status == "error"` в теле 200-ответа; на 429 и 5xx идут повторы
+с учетом `Retry-After`. Для тестов в конструктор передается
 `transport=httpx.MockTransport(...)` - сеть в тестах не используется.
+
+**Сервер собирается фабрикой** `build_server(client_factory=None)`, а не на уровне модуля.
+Это то, что сделало MCP-слой тестируемым: тесты поднимают его с подменным клиентом и
+настоящей MCP-сессией в памяти (`mcp.shared.memory.create_client_server_memory_streams`).
 
 **Ресурсы читаются из двух мест.** Канонические markdown-файлы живут в `docs/instructions/`,
 `playbooks/audit/` и `LEGAL.md`; при сборке wheel hatchling копирует их в
@@ -79,10 +107,16 @@ fallback по `Path(__file__).parents[2] / spec.repo_path`. Отсюда свя�
 
 ## Что легко сломать
 
-- **Счетчики продублированы.** `scripts/smoke.py` хардкодит `EXPECTED_TOOLS = 12`,
+- **Счетчики продублированы.** `scripts/smoke.py` хардкодит `EXPECTED_TOOLS = 13`,
   `EXPECTED_RESOURCES = 5`, `EXPECTED_PROMPTS = 6`; тесты - множества `EXPECTED_TOOLS`,
   `EXPECTED_URIS`, `EXPECTED_PROMPTS`. Любая новая возможность = правка обоих мест
   (полный чеклист - в `AGENTS.md`).
+- **`API_PARAMS` в `tests/test_api_contract.py` - источник истины по параметрам API.**
+  Схема инструмента не должна объявлять ничего, чего нет у метода: `/search` объявлял
+  `date_from`, которого у метода нет, и агент получал невыборку, считая, что отфильтровал.
+  Клиентские параметры (`detail`) перечислены в `CLIENT_ONLY_PARAMS` и в запрос не уходят.
+- **Кэш выключен в тестах** (`CHECKO_CACHE_TTL=0` в autouse-фикстуре). Иначе повторный
+  запрос не дойдет до `MockTransport` и подсчет обращений станет непредсказуемым.
 - **Булевы параметры Checko API принимает только строкой `"true"`.** Этим занимается
   `coerce_bool(args, ...)`: `True → "true"`, `False → None` (параметр исчезает). Новый
   boolean-флаг без вызова `coerce_bool` в pre-валидаторе уйдет в API как `True` и не сработает.
@@ -97,6 +131,13 @@ fallback по `Path(__file__).parents[2] / spec.repo_path`. Отсюда свя�
 - Сообщения об ошибках, описания инструментов и docstrings - на русском, это осознанно
   (локализованный инструмент). Типизация обязательна.
 
+## Проверка на живом API
+
+`scripts/smoke.py` работает без сети. Для сверки с реальным API нужен ключ в `.env`
+(`CHECKO_API_KEY`). Бесплатный тариф - 100 запросов в сутки; каскадный отчет тратит 5-6.
+Не вставляйте реальные ИНН/ОГРН/БИК в код, тесты и документацию - только синтетические
+(см. ниже) либо через переменные окружения.
+
 ## Формат prompts
 
 `builder(args)` - чистая функция: валидирует аргументы (`_required` / `check_format`) и
@@ -106,6 +147,6 @@ fallback по `Path(__file__).parents[2] / spec.repo_path`. Отсюда свя�
 
 ## Правовой контекст
 
-Инструмент работает с данными о физлицах (`get_person`, prompt `audit_person`). Ограничения
+Инструмент работает с данными о физлицах (`profile` с ИНН-12, prompt `audit_person`). Ограничения
 152-ФЗ/149-ФЗ описаны в `LEGAL.md` (он же ресурс `checko://docs/legal`) и учтены в текстах
 prompts - при правках не убирайте требование законного основания.

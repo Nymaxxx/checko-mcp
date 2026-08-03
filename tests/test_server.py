@@ -47,10 +47,10 @@ class TestCallTool:
     async def test_success_returns_structured_content(self) -> None:
         payload = {"data": {"НаимСокр": "ООО «Тест»"}, "meta": {"status": "ok"}}
         async with mcp_session(payload=payload) as (session, _wire):
-            result = await session.call_tool("get_company", {"ogrn": "1234567890123"})
+            result = await session.call_tool("profile", {"identifier": "1234567890123"})
 
         assert result.is_error is False
-        assert result.structured_content == payload
+        assert result.structured_content["data"] == payload["data"]
         assert "ООО «Тест»" in result.content[0].text
 
     async def test_unknown_tool_is_reported_as_error(self) -> None:
@@ -71,7 +71,7 @@ class TestCallTool:
 
     async def test_missing_identifier_does_not_reach_api(self) -> None:
         async with mcp_session() as (session, wire):
-            result = await session.call_tool("get_company", {})
+            result = await session.call_tool("profile", {})
 
         assert result.is_error is True
         assert wire.calls == 0
@@ -79,7 +79,7 @@ class TestCallTool:
     async def test_api_error_sets_is_error(self) -> None:
         payload = {"meta": {"status": "error", "message": "Организация не найдена"}}
         async with mcp_session(payload=payload) as (session, _wire):
-            result = await session.call_tool("get_company", {"ogrn": "1234567890123"})
+            result = await session.call_tool("profile", {"identifier": "1234567890123"})
 
         assert result.is_error is True
         assert "Организация не найдена" in result.content[0].text

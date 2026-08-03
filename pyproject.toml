@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "checko-mcp"
-version = "0.1.1"
+version = "0.2.0"
 description = "MCP server for Checko.ru API v2 — Russian company due-diligence (EGRUL/EGRIP, finances, legal cases, bankruptcy) / MCP-сервер для Checko.ru API v2"
 readme = "README.md"
 requires-python = ">=3.11"

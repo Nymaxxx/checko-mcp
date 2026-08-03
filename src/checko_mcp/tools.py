@@ -7,14 +7,17 @@
 к работающей возможности API.
 """
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from . import _reports
 from ._validation import ValidationError as _ValidationError
 from ._validation import check_format, coerce_bool, require_any
 
 PreCall = Callable[[dict[str, Any]], None]
+# Каскадный обработчик: сам решает, какие эндпоинты вызвать и что вернуть.
+Handler = Callable[[Any, dict[str, Any], str], Awaitable[dict[str, Any]]]
 
 # Длины идентификаторов. ОГРН организации — 13 цифр, ОГРНИП предпринимателя — 15;
 # ИНН юрлица — 10, ИНН физлица (в том числе ИП) — 12.
@@ -28,53 +31,46 @@ _ENT_OGRNIP = (15,)
 
 @dataclass(frozen=True)
 class ToolSpec:
+    """Инструмент — либо тонкая обёртка над одним методом API (`endpoint`),
+    либо каскад, сам обращающийся к нескольким методам (`handler`)."""
+
     name: str
-    endpoint: str
     title: str
     description: str
     schema: dict[str, Any]
+    endpoint: str | None = field(default=None)
     pre: PreCall | None = field(default=None)
+    handler: Handler | None = field(default=None)
+
+    def __post_init__(self) -> None:
+        if bool(self.endpoint) == bool(self.handler):
+            raise ValueError(f"{self.name}: нужно указать ровно одно — endpoint или handler.")
 
 
 # ---------------------------------------------------------------------------
 # Pre-call validators
 # ---------------------------------------------------------------------------
 
-def _search_pre(args: dict[str, Any]) -> None:
-    for key, hint in (
-        ("by", "например, 'name' — по наименованию"),
-        ("obj", "'org' — организация, 'ent' — ИП"),
-        ("query", "текст поискового запроса"),
-    ):
-        if not args.get(key):
-            raise _ValidationError(f"Параметр '{key}' обязателен ({hint}).")
+def _resolve_pre(args: dict[str, Any]) -> None:
+    if not str(args.get("query") or "").strip():
+        raise _ValidationError("Параметр 'query' обязателен.")
     coerce_bool(args, "active")
 
 
-def _company_pre(args: dict[str, Any]) -> None:
-    require_any(args, "ogrn", "inn", "okpo")
-    check_format(args.get("ogrn"), "ogrn", *_ORG_OGRN)
-    check_format(args.get("inn"), "inn", *_ORG_INN)
+def _profile_pre(args: dict[str, Any]) -> None:
+    if not str(args.get("identifier") or "").strip():
+        raise _ValidationError(
+            "Параметр 'identifier' обязателен: ОГРН, ОГРНИП, ИНН, ОКПО или БИК. "
+            "Если известно только наименование или ФИО — сначала вызовите `resolve`."
+        )
     coerce_bool(args, "source")
 
 
-def _entrepreneur_pre(args: dict[str, Any]) -> None:
-    # У метода /entrepreneur параметр называется `ogrn`, хотя несёт ОГРНИП.
-    # Псевдоним оставлен, чтобы вызов с `ogrnip` не проваливался молча.
-    if args.get("ogrnip") and not args.get("ogrn"):
-        args["ogrn"] = args["ogrnip"]
-    args.pop("ogrnip", None)
-
-    require_any(args, "ogrn", "inn", "okpo")
-    check_format(args.get("ogrn"), "ogrn", *_ENT_OGRNIP)
-    check_format(args.get("inn"), "inn", *_PERSON_INN)
-    coerce_bool(args, "source")
-
-
-def _person_pre(args: dict[str, Any]) -> None:
-    if not args.get("inn"):
-        raise _ValidationError("Параметр 'inn' обязателен (ИНН физлица, 12 цифр).")
-    check_format(args.get("inn"), "inn", *_PERSON_INN)
+def _report_pre(args: dict[str, Any]) -> None:
+    if not str(args.get("identifier") or "").strip():
+        raise _ValidationError(
+            "Параметр 'identifier' обязателен: ОГРН, ОГРНИП или ИНН проверяемого субъекта."
+        )
 
 
 def _finances_pre(args: dict[str, Any]) -> None:
@@ -169,28 +165,37 @@ _NOT_BELARUS = (
 
 TOOLS: list[ToolSpec] = [
     ToolSpec(
-        name="search",
-        endpoint="/search",
-        title="Поиск в ЕГРЮЛ/ЕГРИП",
+        name="resolve",
+        title="Найти субъекта",
         description=(
-            "Текстовый поиск организаций и ИП в ЕГРЮЛ/ЕГРИП. Обязательны `by` (что ищем), "
-            "`obj` ('org' — организация, 'ent' — ИП) и `query`.\n"
-            "Ключевые режимы: `by='name'` — по наименованию или ФИО предпринимателя; "
-            "`by='founder-name'` — найти все организации, где человек или компания "
-            "числится учредителем; `by='leader-name'` — где человек руководитель; "
-            "`by='okved'` — по коду вида деятельности; `by='reg-date'` и `by='upd-date'` — "
-            "по дате регистрации или обновления выписки (в `query` передаётся дата "
-            "YYYY-MM-DD).\n"
-            "Если ОГРН или ИНН уже известен — вызывайте `get_company` или "
-            "`get_entrepreneur` напрямую, поиск для этого не нужен. "
-            "Минимум 4 символа при поиске по наименованию или ФИО. " + _NOT_BELARUS
+            "Точка входа. Принимает что угодно: наименование, ФИО, ОГРН, ОГРНИП, ИНН, "
+            "ОКПО или БИК — и возвращает короткий список кандидатов с идентификаторами.\n"
+            "Если передан идентификатор (только цифры), вид субъекта определяется по числу "
+            "цифр, и сразу возвращается его карточка-минимум. Если передан текст — идёт "
+            "поиск по ЕГРЮЛ/ЕГРИП.\n"
+            "Режимы `by`: 'name' — по наименованию организации или ФИО предпринимателя; "
+            "'founder-name' — все организации, где человек или компания числится "
+            "учредителем; 'leader-name' — где человек руководитель; 'okved' — по коду "
+            "деятельности; 'reg-date' и 'upd-date' — по дате (дата передаётся в `query`).\n"
+            "Поиск по учредителю и руководителю — основной способ раскрутить связи "
+            "человека, когда его ИНН неизвестен. Однофамильцы неизбежны: сверяйте "
+            "найденное с другими признаками, прежде чем утверждать, что это тот же человек.\n"
+            "Дальше берите полную карточку через `profile` или сразу отчёт через "
+            "`due_diligence_report`. " + _NOT_BELARUS
         ),
         schema={
             "type": "object",
             "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Наименование, ФИО, идентификатор или дата YYYY-MM-DD. "
+                        "Минимум 4 символа при поиске по наименованию или ФИО"
+                    ),
+                },
                 "by": {
                     "type": "string",
-                    "description": "Критерий поиска",
+                    "description": "Критерий текстового поиска, по умолчанию 'name'",
                     "enum": [
                         "name",
                         "founder-name",
@@ -202,138 +207,87 @@ TOOLS: list[ToolSpec] = [
                 },
                 "obj": {
                     "type": "string",
-                    "description": "Что искать: 'org' — организации, 'ent' — ИП",
+                    "description": "Что искать: 'org' — организации (по умолчанию), 'ent' — ИП",
                     "enum": ["org", "ent"],
-                },
-                "query": {
-                    "type": "string",
-                    "description": (
-                        "Текст запроса: наименование, ФИО, код ОКВЭД-2 "
-                        "или дата YYYY-MM-DD для by='reg-date'/'upd-date'"
-                    ),
                 },
                 "region": {
                     "type": "string",
                     "description": "Код региона РФ, 2 цифры (например, '77' — Москва)",
                 },
-                "okved": {
-                    "type": "string",
-                    "description": (
-                        "Фильтр по основному коду ОКВЭД-2. Не применяется при by='okved'"
-                    ),
-                },
+                "okved": {"type": "string", "description": "Фильтр по коду ОКВЭД-2"},
                 "opf": {
                     "type": "string",
                     "description": (
-                        "Код организационно-правовой формы по ОКОПФ, 2 или 5 цифр. "
-                        "Не применяется при by='name' и при obj='ent'"
+                        "Код ОКОПФ, 2 или 5 цифр. Не применяется при by='name' и obj='ent'"
                     ),
                 },
                 "active": {
                     "type": "boolean",
                     "description": "true — только действующие организации и ИП",
                 },
-                "codes": {
-                    "type": "string",
-                    "description": (
-                        "'all' — при by='okved' искать и по дополнительным кодам ОКВЭД-2"
-                    ),
-                    "enum": ["all"],
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "description": "Сколько кандидатов вернуть, по умолчанию 10",
                 },
-                **_PAGE,
             },
-            "required": ["by", "obj", "query"],
+            "required": ["query"],
         },
-        pre=_search_pre,
+        pre=_resolve_pre,
+        handler=_reports.resolve,
     ),
     ToolSpec(
-        name="get_company",
-        endpoint="/company",
-        title="Организация (ЕГРЮЛ)",
+        name="profile",
+        title="Карточка субъекта",
         description=(
-            "Сведения об организации из ЕГРЮЛ по ОГРН, ИНН или ОКПО: статус, реквизиты, "
-            "адрес, руководители, учредители и связи через них, лицензии, налоги, "
-            "реестр МСП, товарные знаки и факторы риска (санкции, недобросовестный "
-            "поставщик, массовый адрес или руководитель, обременения, записи ЕФРСБ).\n"
+            "Полная карточка субъекта по одному идентификатору. Вид субъекта и нужный "
+            "метод API определяются автоматически по числу цифр, угадывать не нужно:\n"
+            "8 — ОКПО, 9 — БИК банка, 10 — ИНН организации, 12 — ИНН физлица, "
+            "13 — ОГРН организации, 15 — ОГРНИП предпринимателя.\n"
+            "ИНН из 12 цифр разбирается так: сначала ЕГРИП, и если действующего ИП нет — "
+            "данные физлица и его связи с организациями. Обработка данных физлиц "
+            "ограничена 152-ФЗ: убедитесь в наличии законного основания, см. ресурс "
+            "checko://docs/legal.\n"
+            "Что внутри: статус, реквизиты, адрес, руководители, учредители и связи через "
+            "них, лицензии, налоги, реестр МСП, товарные знаки и факторы риска — санкции, "
+            "недобросовестный поставщик, массовый адрес или руководитель, записи ЕФРСБ.\n"
             "Предпочитайте ОГРН: ИНН не уникален при наличии филиалов, и API вернёт "
-            "головную организацию. " + _NOT_BELARUS
-        ),
-        schema={
-            "type": "object",
-            "properties": {
-                **_ORG_ID,
-                "okpo": {
-                    "type": "string",
-                    "description": "Код ОКПО организации (если нет ни ОГРН, ни ИНН)",
-                },
-                "source": {
-                    "type": "boolean",
-                    "description": (
-                        "true — добавить исходный набор данных ЕГРЮЛ от ФНС. "
-                        "Ответ становится очень объёмным: включайте только когда нужны "
-                        "поля, которых нет в основном ответе"
-                    ),
-                },
-            },
-        },
-        pre=_company_pre,
-    ),
-    ToolSpec(
-        name="get_entrepreneur",
-        endpoint="/entrepreneur",
-        title="Индивидуальный предприниматель (ЕГРИП)",
-        description=(
-            "Сведения об индивидуальном предпринимателе из ЕГРИП по ОГРНИП, ИНН (12 цифр) "
-            "или ОКПО: статус, виды деятельности, лицензии, налоговые режимы, реестр МСП, "
-            "товарные знаки, факторы риска и записи ЕФРСБ.\n"
-            "Если ИНН относится к физлицу без действующего ИП — используйте `get_person`. "
+            "головную организацию. Параметр `kind` нужен только чтобы принудительно "
+            "выбрать метод — например, получить физлицо, минуя проверку ЕГРИП. "
             + _NOT_BELARUS
         ),
         schema={
             "type": "object",
             "properties": {
-                "ogrn": {
+                "identifier": {
                     "type": "string",
-                    "description": "ОГРНИП предпринимателя (15 цифр)",
+                    "description": (
+                        "ОГРН, ОГРНИП, ИНН, ОКПО или БИК. Только цифры — наименование "
+                        "и ФИО передавайте в `resolve`"
+                    ),
                 },
-                "inn": {"type": "string", "description": "ИНН предпринимателя (12 цифр)"},
-                "okpo": {
+                "kind": {
                     "type": "string",
-                    "description": "Код ОКПО (если нет ни ОГРНИП, ни ИНН)",
+                    "description": (
+                        "Принудительно выбрать вид субъекта вместо автоопределения: "
+                        "'org' — организация, 'entrepreneur' — ИП, 'person' — физлицо, "
+                        "'bank' — банк"
+                    ),
+                    "enum": ["org", "entrepreneur", "person", "bank"],
                 },
                 "source": {
                     "type": "boolean",
                     "description": (
-                        "true — добавить исходный набор данных ЕГРИП от ФНС. "
-                        "Существенно увеличивает объём ответа"
+                        "true — добавить исходный набор данных ФНС. Ответ становится очень "
+                        'объёмным, поэтому требует detail="full"'
                     ),
                 },
             },
+            "required": ["identifier"],
         },
-        pre=_entrepreneur_pre,
-    ),
-    ToolSpec(
-        name="get_person",
-        endpoint="/person",
-        title="Физическое лицо",
-        description=(
-            "Информация о физическом лице по ИНН (12 цифр): связи с организациями "
-            "в роли руководителя и учредителя, ИП, товарные знаки, записи ЕФРСБ, "
-            "реестр недобросовестных поставщиков, санкции и массовые показатели ФНС.\n"
-            "Физлицо ищется только по ИНН — поиска по ФИО у этого метода нет. Чтобы найти "
-            "организации по ФИО, используйте `search` с by='founder-name' или "
-            "by='leader-name'.\n"
-            "Обработка данных физлиц ограничена 152-ФЗ: перед использованием прочитайте "
-            "ресурс checko://docs/legal и убедитесь в наличии законного основания."
-        ),
-        schema={
-            "type": "object",
-            "properties": {
-                "inn": {"type": "string", "description": "ИНН физического лица (12 цифр)"},
-            },
-            "required": ["inn"],
-        },
-        pre=_person_pre,
+        pre=_profile_pre,
+        handler=_reports.profile,
     ),
     ToolSpec(
         name="get_finances",
@@ -572,7 +526,76 @@ TOOLS: list[ToolSpec] = [
         },
         pre=_subject_pre,
     ),
+    ToolSpec(
+        name="due_diligence_report",
+        title="Отчёт: проверка контрагента",
+        description=(
+            "Полная проверка контрагента одним вызовом. Сам определяет вид субъекта, "
+            "параллельно опрашивает реестры и возвращает сводку с посчитанными сигналами "
+            "вместо шести сырых ответов.\n"
+            "Источники: карточка ЕГРЮЛ/ЕГРИП, финансовая отчётность (только у юрлиц), "
+            "активные арбитражные иски в роли ответчика, исполнительные производства ФССП, "
+            "сообщения Федресурса, записи ЕФРСБ.\n"
+            "Расходует 5–6 запросов API. На бесплатном тарифе это около 16 проверок "
+            "в сутки, поэтому не вызывайте повторно по тому же субъекту: ответы "
+            "кэшируются, но кэш живёт ограниченное время.\n"
+            "Сигналы считаются по формальным правилам и приводятся с указанием источника. "
+            "Вердикт о сделке инструмент не выносит — это ваша задача с учётом контекста "
+            "пользователя. Если нужны детали по конкретному блоку, вызывайте отдельный "
+            "инструмент: `get_legal_cases`, `get_enforcements` и так далее."
+        ),
+        schema={
+            "type": "object",
+            "properties": {
+                "identifier": {
+                    "type": "string",
+                    "description": (
+                        "ОГРН, ОГРНИП или ИНН. Можно передать наименование — тогда субъект "
+                        "будет найден поиском, но при нескольких совпадениях инструмент "
+                        "попросит уточнить"
+                    ),
+                },
+                "purpose": {
+                    "type": "string",
+                    "description": "Цель проверки — попадёт в отчёт как контекст",
+                },
+            },
+            "required": ["identifier"],
+        },
+        pre=_report_pre,
+        handler=_reports.due_diligence_report,
+    ),
+    ToolSpec(
+        name="bankruptcy_risk",
+        title="Отчёт: риск банкротства",
+        description=(
+            "Оценка риска банкротства по четырём независимым источникам сигналов: записи "
+            "ЕФРСБ, намерения кредиторов обратиться в суд (Федресурс, тип "
+            "CreditorIntentionGoToCourt — опережающий сигнал, публикуется до возбуждения "
+            "дела), исполнительные производства ФССП и капитал по строке 1300 финансовой "
+            "отчётности.\n"
+            "Расходует 4–5 запросов API. Отдаёт показатели и сигналы со ссылкой на "
+            "источник; вероятность банкротства не рассчитывает и вердикт не выносит."
+        ),
+        schema={
+            "type": "object",
+            "properties": {
+                "identifier": {
+                    "type": "string",
+                    "description": "ОГРН, ОГРНИП или ИНН проверяемого субъекта",
+                },
+            },
+            "required": ["identifier"],
+        },
+        pre=_report_pre,
+        handler=_reports.bankruptcy_risk,
+    ),
 ]
+
+
+# Эндпоинты, к которым обращаются каскадные инструменты. Нужны, чтобы тест
+# покрытия видел: ни один метод API не остался без инструмента.
+HANDLER_ENDPOINTS = frozenset({"/search", "/company", "/entrepreneur", "/person", "/bank"})
 
 
 

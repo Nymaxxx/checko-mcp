@@ -8,6 +8,7 @@ import httpx2 as httpx
 from dotenv import load_dotenv
 
 from . import __version__
+from ._cache import DEFAULT_TTL, ResponseCache, make_key
 
 DEFAULT_BASE_URL = "https://api.checko.ru/v2"
 DEFAULT_TIMEOUT = 30.0
@@ -64,6 +65,8 @@ class CheckoClient:
         self._retries = max(1, int(os.environ.get("CHECKO_RETRIES", DEFAULT_RETRIES)))
         self._backoff = DEFAULT_BACKOFF if backoff is None else backoff
         self._last_balance: float | None = None
+        self._billed_requests = 0
+        self.cache = ResponseCache(float(os.environ.get("CHECKO_CACHE_TTL", DEFAULT_TTL)))
         self._http = httpx.AsyncClient(
             base_url=self._base_url,
             timeout=self._timeout,
@@ -75,6 +78,11 @@ class CheckoClient:
     def last_balance(self) -> float | None:
         """Баланс из `meta.balance` последнего успешного ответа, руб."""
         return self._last_balance
+
+    @property
+    def billed_requests(self) -> int:
+        """Сколько запросов реально ушло в API (без отданных из кэша)."""
+        return self._billed_requests
 
     async def aclose(self) -> None:
         await self._http.aclose()
@@ -93,9 +101,15 @@ class CheckoClient:
             CheckoAPIError: API вернул статус ошибки либо запрос не удался.
         """
         clean_params: dict[str, Any] = {k: v for k, v in params.items() if v is not None}
-        clean_params["key"] = self._api_key
 
+        cache_key = make_key(endpoint, clean_params)
+        cached = self.cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        clean_params["key"] = self._api_key
         response = await self._request_with_retry(endpoint, clean_params)
+        self._billed_requests += 1
 
         try:
             data: dict[str, Any] = response.json()
@@ -108,8 +122,10 @@ class CheckoClient:
             if isinstance(balance, (int, float)):
                 self._last_balance = float(balance)
             if meta.get("status") == "error":
+                # Ошибки не кэшируем: временный сбой не должен закрепиться на весь TTL.
                 raise CheckoAPIError(meta.get("message") or "Неизвестная ошибка Checko API")
 
+        self.cache.put(cache_key, data)
         return data
 
     async def _request_with_retry(
