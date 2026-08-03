@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - uses: actions/checkout@v4
@@ -34,6 +34,14 @@ jobs:
 
       - name: Test (pytest)
         run: pytest -q
+
+      # Ловит то, что не ловят unit-тесты: сервер должен реально подняться
+      # и ответить на MCP-хендшейк. Без этого шага мажорный апгрейд SDK
+      # проходит CI незамеченным, а опубликованный пакет падает при импорте.
+      - name: Startup smoke (MCP handshake, без сети)
+        env:
+          CHECKO_API_KEY: ci-dummy-key
+        run: python scripts/smoke.py --no-api
 
   docker:
     name: Build Docker image
