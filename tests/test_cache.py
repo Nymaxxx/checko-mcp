@@ -83,7 +83,7 @@ class TestClientCaching:
         first = await client.get("/company", inn="1234567890")
         second = await client.get("/company", inn="1234567890")
 
-        assert first == second
+        assert first["data"] == second["data"]
         assert calls["n"] == 1
         assert client.billed_requests == 1
 
@@ -98,6 +98,46 @@ class TestClientCaching:
         await client.get("/company", inn="1234567890")
         await client.get("/company", inn="9999999999")
         assert calls["n"] == 2
+
+    async def test_cached_answer_drops_stale_quota_counter(self, make_client) -> None:
+        """Счётчик запросов из кэша устарел, и агент следит по нему за квотой.
+
+        Найдено на живом API: `resolve` показал 51, каскадный отчёт истратил
+        ещё 6, а следующий вызов отдал 54 — счётчик уменьшился. Агент, которому
+        предписано предупреждать у 100, получал заниженную оценку расхода.
+        """
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={"data": {"a": 1}, "meta": {"status": "ok", "today_request_count": 51}},
+            )
+
+        client = make_client(handler)
+        fresh = await client.get("/company", inn="1234567890")
+        cached = await client.get("/company", inn="1234567890")
+
+        assert fresh["meta"]["today_request_count"] == 51
+        assert "today_request_count" not in cached["meta"]
+        assert cached["meta"]["из_кэша"] is True
+        assert "из_кэша" not in fresh["meta"]
+
+    async def test_marking_cache_hit_does_not_corrupt_the_entry(self, make_client) -> None:
+        """Пометка не должна править запись в кэше: следующий читатель ждёт её целой."""
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={"data": {"a": 1}, "meta": {"status": "ok", "today_request_count": 7}},
+            )
+
+        client = make_client(handler)
+        await client.get("/company", inn="1234567890")
+        first_hit = await client.get("/company", inn="1234567890")
+        second_hit = await client.get("/company", inn="1234567890")
+
+        assert first_hit["meta"] == second_hit["meta"]
+        assert client.billed_requests == 1
 
     async def test_errors_are_not_cached(self, make_client) -> None:
         """Временный сбой не должен закрепиться на всё время жизни кэша."""

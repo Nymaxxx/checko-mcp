@@ -229,7 +229,32 @@ def _company_signals(data: dict[str, Any]) -> list[dict[str, str]]:
             signals.append(
                 _signal(IMPORTANT, "Сведения о руководителе недостоверны", "Руковод[].Недост")
             )
+
+    # ФНС вправе закрыть сведения о руководителе и участниках: тогда поля приходят
+    # пустыми при ОгрДоступ=true. Без этого сигнала пустое ФИО выглядит как
+    # отсутствие данных, хотя на деле проверить, кто управляет и кому принадлежит
+    # организация, нельзя — для проверки контрагента это разные вещи.
+    if _access_restricted(data):
+        signals.append(
+            _signal(
+                NOTICE,
+                "Доступ к сведениям о руководителе или участниках ограничен ФНС: "
+                "состав управления и владения по этим данным не проверить",
+                "ОгрДоступ",
+            )
+        )
     return signals
+
+
+def _access_restricted(data: dict[str, Any]) -> bool:
+    """ФНС закрыла сведения о руководителе или хотя бы об одном участнике."""
+    records: list[Any] = list(data.get("Руковод") or [])
+    founders = data.get("Учред")
+    if isinstance(founders, dict):
+        for group in founders.values():
+            if isinstance(group, list):
+                records += group
+    return any(isinstance(item, dict) and item.get("ОгрДоступ") for item in records)
 
 
 def _finance_summary(data: Any) -> dict[str, Any]:
@@ -254,7 +279,9 @@ def _finance_summary(data: Any) -> dict[str, Any]:
 
 def _finance_signals(summary: dict[str, Any]) -> list[dict[str, str]]:
     signals: list[dict[str, str]] = []
-    for label, row in (summary.get("показатели") or {}).items():
+    rows = summary.get("показатели") or {}
+
+    for label, row in rows.items():
         if not label.startswith("1300") or not row:
             continue
         last_year = max(row)
@@ -262,13 +289,53 @@ def _finance_signals(summary: dict[str, Any]) -> list[dict[str, str]]:
             signals.append(
                 _signal(
                     IMPORTANT,
-                    f"Капитал отрицательный за {last_year}: {row[last_year]:,.0f} руб.".replace(
-                        ",", " "
-                    ),
+                    f"Капитал отрицательный за {last_year}: {_rub(row[last_year])}",
                     "строка 1300",
                 )
             )
+
+    signals += _loss_streak_signal(rows)
     return signals
+
+
+def _loss_streak_signal(rows: dict[str, dict[str, Any]]) -> list[dict[str, str]]:
+    """Убыток по строке 2400 два и более года подряд, считая от последнего.
+
+    Правило взято из `playbooks/audit/methodology.md` («убытки несколько лет
+    подряд = риск»): методология отдаётся агенту как ресурс, и отчёт не должен
+    молчать о том, что она требует проверять. Один убыточный год сигналом не
+    считается — это обычная волатильность.
+    """
+    row = next((v for k, v in rows.items() if k.startswith("2400") and v), None)
+    if not row:
+        return []
+
+    years = sorted(row, reverse=True)
+    streak = 0
+    for year in years:
+        if row[year] < 0:
+            streak += 1
+        else:
+            break
+    if streak < 2:
+        return []
+
+    latest, earliest = years[0], years[streak - 1]
+    # Знак несёт слово «убыток»: «убыток ... суммарно -70 млрд» — двойное
+    # отрицание, и агент может пересказать его как «минус 70 млрд убытка».
+    total = abs(sum(row[year] for year in years[:streak]))
+    return [
+        _signal(
+            IMPORTANT,
+            f"Чистый убыток {streak} года подряд ({earliest}–{latest}), "
+            f"суммарно {_rub(total)}",
+            "строка 2400",
+        )
+    ]
+
+
+def _rub(value: float) -> str:
+    return f"{value:,.0f} руб.".replace(",", " ")
 
 
 def _records_summary(payload: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
@@ -373,7 +440,11 @@ async def due_diligence_report(client, args: dict[str, Any], detail: str) -> dic
         report["проверенный_субъект"].update(_project(data))
         managers = data.get("Руковод") or []
         if managers and isinstance(managers[0], dict):
-            report["проверенный_субъект"]["руководитель"] = managers[0].get("ФИО")
+            # Пустое ФИО при ОгрДоступ=true — не отсутствие данных, а закрытые
+            # сведения. Голый null агент прочитает как «руководителя нет».
+            report["проверенный_субъект"]["руководитель"] = managers[0].get("ФИО") or (
+                "сведения закрыты ФНС (ОгрДоступ)" if managers[0].get("ОгрДоступ") else None
+            )
         signals += _company_signals(data)
 
     finances = fetched.get("финансы")

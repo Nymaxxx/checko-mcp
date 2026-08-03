@@ -371,6 +371,113 @@ class TestProfile:
         assert wire.calls == 0
 
 
+class TestRestrictedAccess:
+    """ФНС вправе закрыть сведения о руководителе и участниках.
+
+    Найдено на живом API: карточка приходит с `ОгрДоступ: true` и пустыми
+    ФИО/ОГРН/ИНН. Отчёт отдавал `"руководитель": null` — агент читает это как
+    «руководителя нет», хотя на самом деле состав управления и владения по
+    этим данным проверить нельзя.
+    """
+
+    RESTRICTED = {
+        **COMPANY_CARD,
+        "Руковод": [{"ОгрДоступ": True, "ФИО": None, "ИНН": None}],
+        "Учред": {"РосОрг": [{"ОгрДоступ": True, "ОГРН": None, "НаимСокр": None}], "ФЛ": []},
+    }
+
+    async def test_null_leader_is_explained_not_left_empty(self) -> None:
+        async with mcp_session(payload=_router({"/company": {"data": self.RESTRICTED}})) as (
+            session,
+            _wire,
+        ):
+            result = await session.call_tool(
+                "due_diligence_report", {"identifier": "1234567890123"}
+            )
+
+        leader = result.structured_content["проверенный_субъект"]["руководитель"]
+        assert leader is not None
+        assert "ОгрДоступ" in leader
+
+    async def test_restriction_is_reported_as_a_signal(self) -> None:
+        async with mcp_session(payload=_router({"/company": {"data": self.RESTRICTED}})) as (
+            session,
+            _wire,
+        ):
+            result = await session.call_tool(
+                "due_diligence_report", {"identifier": "1234567890123"}
+            )
+
+        signals = result.structured_content["сигналы"]
+        assert any("ОгрДоступ" in s["источник"] for s in signals)
+
+    async def test_open_card_gets_no_restriction_signal(self) -> None:
+        async with mcp_session(payload=_router()) as (session, _wire):
+            result = await session.call_tool(
+                "due_diligence_report", {"identifier": "1234567890123"}
+            )
+
+        signals = result.structured_content["сигналы"]
+        assert not any("ОгрДоступ" in s["источник"] for s in signals)
+        assert result.structured_content["проверенный_субъект"]["руководитель"] == (
+            "Иванов Иван Иванович"
+        )
+
+
+class TestLossStreak:
+    """Правило из playbooks/audit/methodology.md: убытки несколько лет подряд.
+
+    Методология отдаётся агенту как MCP-ресурс, поэтому отчёт не должен молчать
+    о том, что она требует проверять.
+    """
+
+    @staticmethod
+    def _finances(profit_by_year: dict[str, int]) -> dict:
+        return {
+            "data": {
+                year: {"2400": {"СумОтч": value}, "1300": {"СумОтч": 1_000_000}}
+                for year, value in profit_by_year.items()
+            }
+        }
+
+    async def _signals(self, profit_by_year: dict[str, int]) -> list[dict[str, str]]:
+        payload = _router({"/finances": self._finances(profit_by_year)})
+        async with mcp_session(payload=payload) as (session, _wire):
+            result = await session.call_tool(
+                "due_diligence_report", {"identifier": "1234567890123"}
+            )
+        return result.structured_content["сигналы"]
+
+    async def test_two_loss_years_in_a_row_are_flagged(self) -> None:
+        signals = await self._signals({"2022": 5_000, "2023": -3_000, "2024": -1_000})
+
+        loss = [s for s in signals if s["источник"] == "строка 2400"]
+        assert len(loss) == 1
+        assert "2 года подряд" in loss[0]["факт"]
+        assert "2023" in loss[0]["факт"] and "2024" in loss[0]["факт"]
+        assert loss[0]["уровень"] == IMPORTANT
+        # Знак несёт слово «убыток», минус в сумме был бы двойным отрицанием.
+        assert "4 000 руб." in loss[0]["факт"]
+        assert "-" not in loss[0]["факт"]
+
+    async def test_single_loss_year_is_not_a_signal(self) -> None:
+        """Один убыточный год — обычная волатильность, а не сигнал."""
+        signals = await self._signals({"2022": 5_000, "2023": 4_000, "2024": -1_000})
+
+        assert not any(s["источник"] == "строка 2400" for s in signals)
+
+    async def test_streak_is_counted_from_the_latest_year(self) -> None:
+        """Убытки в прошлом, но последний год прибыльный — сигнала нет."""
+        signals = await self._signals({"2022": -5_000, "2023": -4_000, "2024": 1_000})
+
+        assert not any(s["источник"] == "строка 2400" for s in signals)
+
+    async def test_profitable_years_give_no_signal(self) -> None:
+        signals = await self._signals({"2023": 4_000, "2024": 1_000})
+
+        assert not any(s["источник"] == "строка 2400" for s in signals)
+
+
 @pytest.mark.parametrize("tool", ["due_diligence_report", "bankruptcy_risk", "profile"])
 async def test_identifier_is_required(tool: str) -> None:
     async with mcp_session(payload=_router()) as (session, wire):

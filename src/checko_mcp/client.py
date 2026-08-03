@@ -36,6 +36,28 @@ def _describe(exc: Exception) -> str:
     return text or exc.__class__.__name__
 
 
+def _mark_cached(payload: dict[str, Any]) -> dict[str, Any]:
+    """Пометить ответ как взятый из кэша и убрать из него счётчик запросов.
+
+    `meta.today_request_count` — это состояние на момент, когда ответ был
+    получен. Отдавая его повторно, кэш заставлял счётчик убывать: агенту
+    предписано следить по нему за суточной квотой и предупреждать у 100,
+    и устаревшее значение делает эту оценку неверной в опасную сторону.
+
+    Возвращается копия: сам объект в кэше не меняется, иначе следующий
+    читатель получил бы уже испорченную запись.
+    """
+    result = dict(payload)
+    meta = result.get("meta")
+    if isinstance(meta, dict):
+        meta = {k: v for k, v in meta.items() if k != "today_request_count"}
+        meta["из_кэша"] = True
+        result["meta"] = meta
+    else:
+        result["meta"] = {"из_кэша": True}
+    return result
+
+
 class CheckoClient:
     """Async HTTP-клиент для Checko.ru API v2.
 
@@ -105,7 +127,7 @@ class CheckoClient:
         cache_key = make_key(endpoint, clean_params)
         cached = self.cache.get(cache_key)
         if cached is not None:
-            return cached
+            return _mark_cached(cached)
 
         clean_params["key"] = self._api_key
         response = await self._request_with_retry(endpoint, clean_params)
