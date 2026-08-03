@@ -11,7 +11,7 @@
 
 import pytest
 
-from checko_mcp.tools import TOOLS, TOOLS_BY_NAME
+from checko_mcp.tools import CLIENT_ONLY_PARAMS, TOOLS, TOOLS_BY_NAME
 
 from .conftest import mcp_session
 
@@ -53,12 +53,26 @@ class TestSchemasMatchDocumentedApi:
 
     @pytest.mark.parametrize("spec", TOOLS, ids=lambda s: s.name)
     def test_schema_declares_no_unknown_parameters(self, spec) -> None:
-        declared = set(spec.schema["properties"])
+        declared = set(spec.schema["properties"]) - CLIENT_ONLY_PARAMS
         unknown = declared - API_PARAMS[spec.endpoint]
         assert not unknown, (
             f"{spec.name} объявляет параметры, которых нет у {spec.endpoint}: "
             f"{sorted(unknown)}. Агент решит, что фильтр применён, а API его проигнорирует."
         )
+
+    @pytest.mark.parametrize("spec", TOOLS, ids=lambda s: s.name)
+    def test_every_tool_offers_detail(self, spec) -> None:
+        assert set(spec.schema["properties"]["detail"]["enum"]) == {"compact", "full"}
+
+    async def test_client_only_params_never_reach_the_api(self) -> None:
+        """`detail` обрабатывается сервером; попадание его в запрос — ошибка."""
+        async with mcp_session() as (session, wire):
+            result = await session.call_tool(
+                "get_company", {"ogrn": "1234567890123", "detail": "full"}
+            )
+
+        assert not result.is_error
+        assert CLIENT_ONLY_PARAMS.isdisjoint(wire.params)
 
 
 # (инструмент, аргументы, ожидаемый путь, ожидаемые query-параметры без key)

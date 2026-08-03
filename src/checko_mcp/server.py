@@ -16,6 +16,7 @@ import mcp_types as types
 from mcp.server import Server, ServerRequestContext
 from mcp.server.stdio import stdio_server
 
+from . import _shape
 from . import prompts as prompts_mod
 from . import resources as resources_mod
 from ._validation import ValidationError
@@ -103,6 +104,14 @@ def _build_handlers(runtime: _Runtime) -> dict[str, Callable[..., Awaitable[Any]
 
         arguments: dict[str, Any] = dict(params.arguments or {})
 
+        # detail — параметр сервера, в запрос к API он не уходит.
+        detail = str(arguments.pop("detail", _shape.COMPACT)).strip().lower()
+        if detail not in (_shape.COMPACT, _shape.FULL):
+            return _fail(
+                f"'detail' должен быть '{_shape.COMPACT}' или '{_shape.FULL}' "
+                f"(получено: '{detail}')."
+            )
+
         # Валидация идёт до создания клиента: иначе при отсутствующем API-ключе
         # любая ошибка в аргументах маскируется сообщением про ключ.
         try:
@@ -111,12 +120,19 @@ def _build_handlers(runtime: _Runtime) -> dict[str, Callable[..., Awaitable[Any]
         except ValidationError as exc:
             return _fail(str(exc))
 
+        if arguments.get("source") and detail != _shape.FULL:
+            return _fail(
+                "source=true возвращает полный исходный набор данных ФНС, и сворачивать "
+                'его бессмысленно. Повторите вызов с detail="full" — либо уберите source, '
+                "если нужны только основные сведения."
+            )
+
         try:
             result = await runtime.client().get(spec.endpoint, **arguments)
         except (ValidationError, CheckoAPIError) as exc:
             return _fail(str(exc))
 
-        return _ok(result)
+        return _ok(_shape.shape(spec.endpoint, result, detail))
 
     async def on_list_resources(
         ctx: ServerRequestContext[None], params: types.PaginatedRequestParams | None
