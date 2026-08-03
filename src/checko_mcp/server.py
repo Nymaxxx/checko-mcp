@@ -16,7 +16,7 @@ import mcp_types as types
 from mcp.server import Server, ServerRequestContext
 from mcp.server.stdio import stdio_server
 
-from . import _shape
+from . import __version__, _shape
 from . import prompts as prompts_mod
 from . import resources as resources_mod
 from ._validation import ValidationError
@@ -187,6 +187,10 @@ def build_server(
     runtime = _Runtime(client_factory)
     server: Server[None] = Server(
         SERVER_NAME,
+        # Без явной version SDK отдаёт клиенту пустую строку. Версия в
+        # server_info — единственный способ для клиента понять, какая сборка
+        # запущена: 0.1.0 падала при импорте, и отличать её от рабочей нужно.
+        version=__version__,
         title="Checko — проверка контрагентов",
         instructions=(
             "Инструменты дают доступ к российским государственным реестрам через API "

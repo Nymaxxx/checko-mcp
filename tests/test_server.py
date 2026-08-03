@@ -7,9 +7,11 @@
 
 import pytest
 
+from checko_mcp import __version__
 from checko_mcp.client import CheckoAPIError
 from checko_mcp.prompts import PROMPTS
 from checko_mcp.resources import RESOURCES
+from checko_mcp.server import build_server
 from checko_mcp.tools import TOOLS
 
 from .conftest import mcp_session
@@ -20,6 +22,19 @@ class TestHandshake:
         async with mcp_session() as (session, _wire):
             tools = await session.list_tools()
         assert tools.tools
+
+    def test_handshake_reports_package_version(self) -> None:
+        """Версия в server_info — то, по чему клиент отличает сборки.
+
+        SDK по умолчанию подставляет пустую строку, и её отсутствие ничего
+        не ломает: сервер поднимается, инструменты работают. Поэтому потерю
+        версии заметит только этот тест.
+        """
+        server, _runtime = build_server()
+        options = server.create_initialization_options()
+
+        assert options.server_version == __version__
+        assert options.server_name == "checko"
 
 
 class TestListTools:
